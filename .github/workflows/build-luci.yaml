@@ -60,3 +60,4 @@ jobs:
         with:
           files: packages/*
           generate_release_notes: true
+          make_latest: "legacy"
