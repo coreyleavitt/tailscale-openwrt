@@ -4,12 +4,12 @@ Modern JavaScript-based LuCI interface for managing Tailscale exit node killswit
 
 ## Features
 
-- ✅ Modern JavaScript UI (future-proof, no legacy Lua CBI)
-- ✅ Real-time killswitch status display
-- ✅ One-click enable/disable killswitch
-- ✅ JSON-RPC backend via ubus
-- ✅ Proper ACL permissions
-- ✅ Compatible with OpenWrt 22.x, 23.x, 24.x+
+- Modern JavaScript UI (future-proof, no legacy Lua CBI)
+- Real-time killswitch status display
+- One-click enable/disable killswitch
+- JSON-RPC backend via ubus
+- Proper ACL permissions
+- Compatible with OpenWrt 22.x, 23.x, 24.x+
 
 ## Prerequisites
 

@@ -49,7 +49,7 @@ fi
 # Show file info
 echo ""
 echo "========================================"
-echo "✅ Build complete!"
+echo "Build complete!"
 echo "========================================"
 ls -lh "${OUTPUT_DIR}/${PKG_NAME}_${VERSION}.ipk"
 echo ""

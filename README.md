@@ -89,14 +89,14 @@ See [docs/INSTALL.md](docs/INSTALL.md) for detailed setup instructions including
 
 ## Features
 
-- ✅ Direct binary builds (no SDK overhead)
-- ✅ Multi-architecture support
-- ✅ Exit node with WWAN compatibility
-- ✅ Leak-proof killswitch
-- ✅ Modern LuCI web interface
-- ✅ DNS leak prevention
-- ✅ UCI configuration
-- ✅ Auto-start on boot
+- Direct binary builds (no SDK overhead)
+- Multi-architecture support
+- Exit node with WWAN compatibility
+- Leak-proof killswitch
+- Modern LuCI web interface
+- DNS leak prevention
+- UCI configuration
+- Auto-start on boot
 
 ## Supported Devices
 

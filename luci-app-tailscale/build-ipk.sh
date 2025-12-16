@@ -78,4 +78,4 @@ else
 	exit 1
 fi
 
-echo "✅ Built: ${PKG_NAME}_${PKG_VERSION}.ipk"
+echo "Built: ${PKG_NAME}_${PKG_VERSION}.ipk"
