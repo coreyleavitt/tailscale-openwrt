@@ -6,9 +6,16 @@ on:
       tailscale_version:
         description: 'Tailscale version to build (e.g. 1.88.3)'
         required: true
+      go_version:
+        description: 'Go version (default: 1.23)'
+        required: false
+        default: '1.23'
   push:
     tags:
       - 'v*'
+
+env:
+  GO_VERSION: ${{ github.event.inputs.go_version || '1.23' }}
 
 jobs:
   build-glinet:
@@ -32,6 +39,7 @@ jobs:
         run: |
           cd tailscale-package
           docker build \
+            --build-arg GO_VERSION=${{ env.GO_VERSION }} \
             --build-arg TAILSCALE_VERSION=${{ steps.version.outputs.version }} \
             --build-arg PACKAGE_VARIANT=glinet-mips24kc \
             --build-arg OPENWRT_ARCH=mips_24kc \
@@ -72,6 +80,7 @@ jobs:
         run: |
           cd tailscale-package
           docker build \
+            --build-arg GO_VERSION=${{ env.GO_VERSION }} \
             --build-arg TAILSCALE_VERSION=${{ steps.version.outputs.version }} \
             --build-arg PACKAGE_VARIANT=cudy-aarch64 \
             --build-arg OPENWRT_ARCH=aarch64_cortex-a53 \

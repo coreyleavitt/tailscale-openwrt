@@ -1,7 +1,8 @@
 #!/bin/sh
 #
 # Tailscale Exit Node Killswitch for OpenWrt 22.x, 23.x, and 24.x
-# Automatically detects the OpenWrt version and applies the correct firewall logic.
+# Blocks all WAN traffic except through Tailscale exit node.
+# Includes DNS leak prevention.
 #
 
 # --- Configuration ---
@@ -13,15 +14,38 @@ WAN_ZONE_NAME="wan"
 # --- Functions ---
 
 get_openwrt_version() {
-    # Source the os-release file to get version info and extract the major version number
     if [ -f /etc/os-release ]; then
         # shellcheck source=/dev/null
         . /etc/os-release
-        OPENWRT_MAJOR_VERSION=$(echo "$VERSION_ID" | cut -d'.' -f1)
+        if [ -n "$VERSION_ID" ]; then
+            OPENWRT_MAJOR_VERSION=$(echo "$VERSION_ID" | cut -d'.' -f1)
+        else
+            OPENWRT_MAJOR_VERSION="22"
+        fi
     else
-        # Fallback for very old versions, default to 22
         OPENWRT_MAJOR_VERSION="22"
     fi
+}
+
+verify_interface() {
+    if ! ip link show "$TAILSCALE_INTERFACE" >/dev/null 2>&1; then
+        echo "WARNING: $TAILSCALE_INTERFACE interface does not exist yet."
+        echo "Killswitch config will be applied but won't be active until Tailscale starts."
+        echo "Run: /etc/init.d/tailscale start"
+        echo ""
+    fi
+}
+
+reload_firewall() {
+    echo "Applying firewall changes..."
+    uci commit firewall
+
+    if ! /etc/init.d/firewall reload; then
+        echo "ERROR: Firewall reload failed!"
+        echo "Check firewall config: uci show firewall"
+        return 1
+    fi
+    return 0
 }
 
 enable_killswitch() {
@@ -29,12 +53,16 @@ enable_killswitch() {
     get_openwrt_version
     echo "Detected OpenWrt major version: ${OPENWRT_MAJOR_VERSION}"
 
-    # 1. Delete old settings individually to prevent batch failure on first run.
+    verify_interface
+
+    # 1. Clean up any existing killswitch rules
     uci -q delete firewall.${TAILSCALE_ZONE_NAME} || true
     uci -q delete firewall.lan_to_ts_forwarding || true
-    uci -q delete firewall.lan_to_wan_block || true # For v23+ cleanup
+    uci -q delete firewall.lan_to_wan_block || true
+    uci -q delete firewall.block_wan_dns || true
+    uci -q delete firewall.allow_ts_dns || true
 
-    # 2. Create all new settings in a single, efficient batch operation.
+    # 2. Create Tailscale zone and forwarding rules
     uci batch <<EOF
 set firewall.${TAILSCALE_ZONE_NAME}=zone
 set firewall.${TAILSCALE_ZONE_NAME}.name='${TAILSCALE_ZONE_NAME}'
@@ -51,53 +79,86 @@ set firewall.lan_to_ts_forwarding.src='${LAN_ZONE_NAME}'
 set firewall.lan_to_ts_forwarding.dest='${TAILSCALE_ZONE_NAME}'
 EOF
 
-    # --- Version-Specific Killswitch Logic ---
-    if [ "${OPENWRT_MAJOR_VERSION}" -ge "23" ]; then
-        echo "Applying firewall4 (nftables) compatible killswitch for OpenWrt 23.x+"
-        uci set firewall.lan_to_wan_block=rule
-        uci set firewall.lan_to_wan_block.name='Block LAN to WAN'
-        uci set firewall.lan_to_wan_block.src="${LAN_ZONE_NAME}"
-        uci set firewall.lan_to_wan_block.dest="${WAN_ZONE_NAME}"
-        uci set firewall.lan_to_wan_block.target='REJECT'
+    # 3. Block LAN to WAN traffic (works for both fw3 and fw4)
+    echo "Adding LAN to WAN block rule..."
+    uci set firewall.lan_to_wan_block=rule
+    uci set firewall.lan_to_wan_block.name='Block LAN to WAN (Tailscale Killswitch)'
+    uci set firewall.lan_to_wan_block.src="${LAN_ZONE_NAME}"
+    uci set firewall.lan_to_wan_block.dest="${WAN_ZONE_NAME}"
+    uci set firewall.lan_to_wan_block.target='REJECT'
+    uci set firewall.lan_to_wan_block.family='any'
+
+    # 4. DNS leak prevention - block DNS to WAN, allow to Tailscale
+    echo "Adding DNS leak prevention rules..."
+    uci set firewall.block_wan_dns=rule
+    uci set firewall.block_wan_dns.name='Block WAN DNS (Prevent Leaks)'
+    uci set firewall.block_wan_dns.src="${LAN_ZONE_NAME}"
+    uci set firewall.block_wan_dns.dest="${WAN_ZONE_NAME}"
+    uci set firewall.block_wan_dns.dest_port='53'
+    uci set firewall.block_wan_dns.proto='tcp udp'
+    uci set firewall.block_wan_dns.target='REJECT'
+    uci set firewall.block_wan_dns.family='any'
+
+    uci set firewall.allow_ts_dns=rule
+    uci set firewall.allow_ts_dns.name='Allow Tailscale DNS'
+    uci set firewall.allow_ts_dns.src="${LAN_ZONE_NAME}"
+    uci set firewall.allow_ts_dns.dest="${TAILSCALE_ZONE_NAME}"
+    uci set firewall.allow_ts_dns.dest_port='53'
+    uci set firewall.allow_ts_dns.proto='tcp udp'
+    uci set firewall.allow_ts_dns.target='ACCEPT'
+    uci set firewall.allow_ts_dns.family='any'
+
+    if reload_firewall; then
+        echo "Killswitch enabled successfully."
     else
-        echo "Applying firewall3 (iptables) compatible killswitch for OpenWrt 22.x"
-        uci set firewall.@forwarding[0].target='REJECT'
+        echo "Killswitch configuration saved but firewall reload failed."
+        return 1
     fi
-
-    echo "Applying firewall changes..."
-    uci commit firewall
-    /etc/init.d/firewall reload
-
-    echo "Killswitch enabled."
 }
 
 disable_killswitch() {
     echo "Disabling Tailscale exit node killswitch..."
-    get_openwrt_version
 
-    # --- Version-Specific Disable Logic ---
-    if [ "${OPENWRT_MAJOR_VERSION}" -ge "23" ]; then
-        uci -q delete firewall.lan_to_wan_block || true
-    else
-        # For v22, delete the target option to restore default 'ACCEPT' behavior.
-        uci -q delete firewall.@forwarding[0].target || true
-    fi
-
-    # The rest of the cleanup is the same for all versions
+    # Remove all killswitch-related rules
+    uci -q delete firewall.lan_to_wan_block || true
+    uci -q delete firewall.block_wan_dns || true
+    uci -q delete firewall.allow_ts_dns || true
     uci -q delete firewall.${TAILSCALE_ZONE_NAME} || true
     uci -q delete firewall.lan_to_ts_forwarding || true
 
-    echo "Applying firewall changes..."
-    uci commit firewall
-    /etc/init.d/firewall reload
-
-    echo "Killswitch disabled."
+    if reload_firewall; then
+        echo "Killswitch disabled successfully."
+    else
+        echo "Killswitch configuration removed but firewall reload failed."
+        return 1
+    fi
 }
 
 check_status() {
-    # This check works for all versions as it just looks for the custom zone
     if uci -q get firewall.${TAILSCALE_ZONE_NAME} >/dev/null 2>&1; then
-        echo "Killswitch status: ENABLED"
+        echo "Killswitch status: ENABLED (config present)"
+
+        # Verify rules are actually loaded in firewall
+        get_openwrt_version
+        if [ "${OPENWRT_MAJOR_VERSION}" -ge "23" ]; then
+            # Check nftables for the rule
+            if command -v nft >/dev/null 2>&1; then
+                if nft list ruleset 2>/dev/null | grep -q "Block LAN to WAN"; then
+                    echo "Firewall rules: ACTIVE"
+                else
+                    echo "WARNING: Config exists but rules may not be loaded. Try: /etc/init.d/firewall reload"
+                fi
+            fi
+        else
+            # Check iptables for reject rule
+            if command -v iptables >/dev/null 2>&1; then
+                if iptables -L FORWARD -n 2>/dev/null | grep -q "REJECT"; then
+                    echo "Firewall rules: ACTIVE"
+                else
+                    echo "WARNING: Config exists but rules may not be loaded. Try: /etc/init.d/firewall reload"
+                fi
+            fi
+        fi
         return 0
     else
         echo "Killswitch status: DISABLED"
@@ -106,46 +167,47 @@ check_status() {
 }
 
 check_status_verbose() {
-    # First, run the basic check. If it's disabled, stop here.
     check_status
-    if [ $? -ne 0 ]; then
+    local status=$?
+
+    if [ $status -ne 0 ]; then
         return 1
     fi
 
     echo ""
     echo "--- Detailed Firewall Configuration ---"
 
-    # Show the Tailscale zone configuration
-    echo "Tailscale Zone (firewall.${TAILSCALE_ZONE_NAME}):"
-    uci show firewall.${TAILSCALE_ZONE_NAME}
     echo ""
+    echo "Tailscale Zone:"
+    uci show firewall.${TAILSCALE_ZONE_NAME} 2>/dev/null || echo "  (not configured)"
 
-    # Show the LAN -> Tailscale forwarding rule
-    echo "LAN to Tailscale Forwarding (firewall.lan_to_ts_forwarding):"
-    uci show firewall.lan_to_ts_forwarding
     echo ""
+    echo "LAN to Tailscale Forwarding:"
+    uci show firewall.lan_to_ts_forwarding 2>/dev/null || echo "  (not configured)"
 
-    # Show the version-specific killswitch implementation details
-    get_openwrt_version
-    if [ "${OPENWRT_MAJOR_VERSION}" -ge "23" ]; then
-        echo "Killswitch Rule (firewall.lan_to_wan_block) [v23+ Method]:"
-        uci show firewall.lan_to_wan_block
+    echo ""
+    echo "LAN to WAN Block Rule:"
+    uci show firewall.lan_to_wan_block 2>/dev/null || echo "  (not configured)"
+
+    echo ""
+    echo "DNS Leak Prevention - Block WAN DNS:"
+    uci show firewall.block_wan_dns 2>/dev/null || echo "  (not configured)"
+
+    echo ""
+    echo "DNS Leak Prevention - Allow Tailscale DNS:"
+    uci show firewall.allow_ts_dns 2>/dev/null || echo "  (not configured)"
+
+    echo ""
+    echo "--- Interface Status ---"
+    if ip link show "$TAILSCALE_INTERFACE" >/dev/null 2>&1; then
+        echo "Tailscale interface ($TAILSCALE_INTERFACE): UP"
+        ip addr show "$TAILSCALE_INTERFACE" 2>/dev/null | grep -E "inet |inet6 " | head -2
     else
-        LAN_WAN_TARGET=$(uci -q get firewall.@forwarding[0].target)
-        echo "Killswitch State (@forwarding[0].target) [v22 Method]:"
-        if [ -z "$LAN_WAN_TARGET" ]; then
-            echo "   Current state: Not set (Implies ACCEPT - Normal)"
-        else
-            echo "   Current state: ${LAN_WAN_TARGET}"
-        fi
-
-        if [ "$LAN_WAN_TARGET" = "REJECT" ]; then
-            echo "   Killswitch is correctly set to REJECT."
-        else
-            echo "   Warning: State is not REJECT. Killswitch may not be active."
-        fi
+        echo "Tailscale interface ($TAILSCALE_INTERFACE): NOT PRESENT"
+        echo "  Tailscale may not be running. Check: /etc/init.d/tailscale status"
     fi
-    echo "-------------------------------------"
+
+    echo "---------------------------------------"
 }
 
 # --- Main Logic ---
@@ -164,7 +226,20 @@ case "$1" in
         fi
         ;;
     *)
+        echo "Tailscale Exit Node Killswitch"
+        echo ""
         echo "Usage: $0 {enable|disable|status [--verbose|-v]}"
+        echo ""
+        echo "Commands:"
+        echo "  enable   - Block all WAN traffic except through Tailscale"
+        echo "  disable  - Remove killswitch rules and restore normal routing"
+        echo "  status   - Check if killswitch is enabled"
+        echo ""
+        echo "When enabled, this script:"
+        echo "  - Creates a firewall zone for Tailscale"
+        echo "  - Blocks all LAN to WAN traffic"
+        echo "  - Allows LAN to Tailscale forwarding"
+        echo "  - Prevents DNS leaks by blocking WAN DNS"
         exit 1
         ;;
 esac
