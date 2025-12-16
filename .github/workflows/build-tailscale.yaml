@@ -1,0 +1,114 @@
+name: Build Tailscale Packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      tailscale_version:
+        description: 'Tailscale version to build (e.g. 1.88.3)'
+        required: true
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-glinet:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "version=${{ github.event.inputs.tailscale_version }}" >> $GITHUB_OUTPUT
+          else
+            echo "version=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build GL.iNet package (mips_24kc)
+        run: |
+          cd tailscale-package
+          docker build \
+            --build-arg TAILSCALE_VERSION=${{ steps.version.outputs.version }} \
+            --build-arg PACKAGE_VARIANT=glinet-mips24kc \
+            --build-arg OPENWRT_ARCH=mips_24kc \
+            -t tailscale-glinet:latest \
+            -f Dockerfile .
+
+      - name: Extract package
+        run: |
+          mkdir -p packages
+          docker run --rm tailscale-glinet:latest \
+            cat /tailscale-glinet-mips24kc_${{ steps.version.outputs.version }}.ipk \
+            > packages/tailscale-glinet-mips24kc_${{ steps.version.outputs.version }}.ipk
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tailscale-glinet
+          path: packages/*.ipk
+
+  build-cudy:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "version=${{ github.event.inputs.tailscale_version }}" >> $GITHUB_OUTPUT
+          else
+            echo "version=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build Cudy package (aarch64)
+        run: |
+          cd tailscale-package
+          docker build \
+            --build-arg TAILSCALE_VERSION=${{ steps.version.outputs.version }} \
+            --build-arg PACKAGE_VARIANT=cudy-aarch64 \
+            --build-arg OPENWRT_ARCH=aarch64_cortex-a53 \
+            -t tailscale-cudy:latest \
+            -f Dockerfile .
+
+      - name: Extract package
+        run: |
+          mkdir -p packages
+          docker run --rm tailscale-cudy:latest \
+            cat /tailscale-cudy-aarch64_${{ steps.version.outputs.version }}.ipk \
+            > packages/tailscale-cudy-aarch64_${{ steps.version.outputs.version }}.ipk
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tailscale-cudy
+          path: packages/*.ipk
+
+  release:
+    needs: [build-glinet, build-cudy]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: packages
+          merge-multiple: true
+
+      - name: Generate checksums
+        run: |
+          cd packages
+          sha256sum *.ipk > SHA256SUMS
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: packages/*
+          generate_release_notes: true

@@ -1,0 +1,60 @@
+name: Build LuCI App
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Package version - semver (e.g. 1.0.0)'
+        required: true
+  push:
+    tags:
+      - 'luci-v*'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          else
+            echo "version=${GITHUB_REF_NAME#luci-v}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build LuCI package
+        run: |
+          cd luci-app-tailscale
+          docker build \
+            --build-arg PKG_VERSION=${{ steps.version.outputs.version }} \
+            -t luci-app-tailscale:latest \
+            -f Dockerfile .
+
+      - name: Extract package
+        run: |
+          mkdir -p packages
+          docker run --rm luci-app-tailscale:latest \
+            cat /luci-app-tailscale_${{ steps.version.outputs.version }}.ipk \
+            > packages/luci-app-tailscale_${{ steps.version.outputs.version }}.ipk
+
+      - name: Generate checksum
+        run: |
+          cd packages
+          sha256sum *.ipk > SHA256SUMS
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: luci-app-tailscale
+          path: packages/*
+
+      - name: Create Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v1
+        with:
+          files: packages/*
+          generate_release_notes: true
