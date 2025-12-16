@@ -58,6 +58,7 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v1
         with:
+          name: "LuCI v${{ steps.version.outputs.version }}"
           files: packages/*
           generate_release_notes: true
           make_latest: "legacy"
