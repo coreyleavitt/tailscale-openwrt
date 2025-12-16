@@ -1,0 +1,5 @@
+config tailscale 'config'
+	option enabled '0'
+	option port '41641'
+	option log_level ''
+	option extra_args ''

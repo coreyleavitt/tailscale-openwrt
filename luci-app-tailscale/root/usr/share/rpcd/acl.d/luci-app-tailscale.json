@@ -1,0 +1,31 @@
+{
+	"luci-app-tailscale": {
+		"description": "Grant access to Tailscale management operations",
+		"read": {
+			"ubus": {
+				"luci.tailscale": [
+					"status",
+					"status_verbose",
+					"tailscale_info",
+					"get_exit_node",
+					"list_exit_nodes",
+					"get_accept_routes",
+					"get_advertise_routes",
+					"get_ssh",
+					"get_full_status"
+				]
+			}
+		},
+		"write": {
+			"ubus": {
+				"luci.tailscale": [
+					"killswitch",
+					"set_exit_node",
+					"set_accept_routes",
+					"set_advertise_routes",
+					"set_ssh"
+				]
+			}
+		}
+	}
+}
