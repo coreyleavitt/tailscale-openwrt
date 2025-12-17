@@ -1,64 +1,27 @@
 # Dockerfile for building Tailscale IPK packages for OpenWrt
-# Uses golang image for Go compilation, Tumbleweed for packaging
+# Single-stage build using Tumbleweed for Go compilation, UPX compression, and packaging
 #
 # Build arguments:
-#   TAILSCALE_VERSION - Tailscale version to build (e.g., 1.88.3)
+#   TAILSCALE_VERSION - Tailscale version to build (e.g., 1.92.2)
 #   PACKAGE_VARIANT   - Package variant (glinet-mips24kc or cudy-aarch64)
 #   OPENWRT_ARCH      - OpenWrt architecture (mips_24kc or aarch64_cortex-a53)
-#   GO_VERSION        - Go version to use (default: 1.23)
 
-# Build arguments (declared before first FROM for global scope)
-ARG GO_VERSION=1.23
-ARG TAILSCALE_VERSION=1.88.3
+ARG TAILSCALE_VERSION=1.92.2
 ARG PACKAGE_VARIANT=glinet-mips24kc
 ARG OPENWRT_ARCH=mips_24kc
+ARG SKIP_UPX=0
 
-# =============================================================================
-# Stage 1: Go Build (using official golang image for version control)
-# =============================================================================
-FROM golang:${GO_VERSION}-alpine AS go-builder
-
-ARG TAILSCALE_VERSION
-ARG OPENWRT_ARCH
-
-# Install minimal dependencies for downloading source
-RUN apk add --no-cache curl
-
-# Download and extract Tailscale source
-WORKDIR /build
-RUN curl -L "https://github.com/tailscale/tailscale/archive/refs/tags/v${TAILSCALE_VERSION}.tar.gz" -o tailscale.tar.gz && \
-    tar -xzf tailscale.tar.gz && \
-    mv tailscale-${TAILSCALE_VERSION} tailscale && \
-    rm tailscale.tar.gz
-
-# Build Tailscale binary with size optimizations
-WORKDIR /build/tailscale
-RUN GOARCH=$(echo ${OPENWRT_ARCH} | grep -q aarch64 && echo arm64 || (echo ${OPENWRT_ARCH} | grep -q mipsel && echo mipsle || echo mips)) && \
-    echo "Building for GOARCH=${GOARCH}" && \
-    CGO_ENABLED=0 \
-    GOOS=linux \
-    GOARCH=${GOARCH} \
-    GOMIPS=softfloat \
-    go build \
-        -trimpath \
-        -buildvcs=false \
-        -tags 'ts_include_cli,ts_omit_aws,ts_omit_bird,ts_omit_tap' \
-        -ldflags="-s -w -X tailscale.com/version.longStamp=${TAILSCALE_VERSION} -X tailscale.com/version.shortStamp=${TAILSCALE_VERSION}" \
-        -o /build/tailscaled \
-        ./cmd/tailscaled
-
-# =============================================================================
-# Stage 2: Compress and Package (Tumbleweed for UPX and opkg-build)
-# =============================================================================
-FROM registry.opensuse.org/opensuse/tumbleweed:latest AS packager
+FROM registry.opensuse.org/opensuse/tumbleweed:latest
 
 ARG TAILSCALE_VERSION
 ARG PACKAGE_VARIANT
 ARG OPENWRT_ARCH
+ARG SKIP_UPX
 
-# Install packaging dependencies
+# Install all build dependencies
 RUN zypper --non-interactive refresh && \
     zypper --non-interactive install -y \
+    go \
     upx \
     curl \
     bash \
@@ -74,17 +37,43 @@ RUN curl -o /usr/local/bin/opkg-build \
     https://raw.githubusercontent.com/openwrt/openwrt/openwrt-22.03/scripts/ipkg-build && \
     chmod +x /usr/local/bin/opkg-build
 
-# Copy binary from go-builder stage
-COPY --from=go-builder /build/tailscaled /build/tailscaled
+# Download and extract Tailscale source
+WORKDIR /build
+RUN curl -L "https://github.com/tailscale/tailscale/archive/refs/tags/v${TAILSCALE_VERSION}.tar.gz" -o tailscale.tar.gz && \
+    tar -xzf tailscale.tar.gz && \
+    mv tailscale-${TAILSCALE_VERSION} tailscale && \
+    rm tailscale.tar.gz
+
+# Build Tailscale binary with size optimizations
+# GOTOOLCHAIN=auto downloads whatever Go version Tailscale requires
+WORKDIR /build/tailscale
+RUN GOARCH=$(echo ${OPENWRT_ARCH} | grep -q aarch64 && echo arm64 || (echo ${OPENWRT_ARCH} | grep -q mipsel && echo mipsle || echo mips)) && \
+    echo "Building for GOARCH=${GOARCH}" && \
+    GOTOOLCHAIN=auto \
+    CGO_ENABLED=0 \
+    GOOS=linux \
+    GOARCH=${GOARCH} \
+    GOMIPS=softfloat \
+    go build \
+        -trimpath \
+        -buildvcs=false \
+        -tags 'ts_include_cli,ts_omit_aws,ts_omit_bird,ts_omit_tap' \
+        -ldflags="-s -w -X tailscale.com/version.longStamp=${TAILSCALE_VERSION} -X tailscale.com/version.shortStamp=${TAILSCALE_VERSION}" \
+        -o /build/tailscaled \
+        ./cmd/tailscaled
 
 # Show original size
 RUN echo "Original binary size:" && ls -lh /build/tailscaled
 
-# Compress binary with UPX (try ultra-brute first for best compression)
-RUN upx --ultra-brute /build/tailscaled 2>/dev/null || \
-    upx --best --lzma /build/tailscaled 2>/dev/null || \
-    upx --best /build/tailscaled 2>/dev/null || \
-    echo "UPX compression skipped"
+# Compress binary with UPX (skip with --build-arg SKIP_UPX=1 for faster testing)
+RUN if [ "$SKIP_UPX" = "1" ]; then \
+        echo "UPX compression skipped (SKIP_UPX=1)"; \
+    else \
+        upx --ultra-brute /build/tailscaled 2>/dev/null || \
+        upx --best --lzma /build/tailscaled 2>/dev/null || \
+        upx --best /build/tailscaled 2>/dev/null || \
+        echo "UPX compression failed, continuing without"; \
+    fi
 
 # Show compressed size
 RUN echo "Compressed binary size:" && ls -lh /build/tailscaled
@@ -198,12 +187,5 @@ RUN opkg-build /ipk /tmp && \
     mv /tmp/tailscale-${PACKAGE_VARIANT}_${TAILSCALE_VERSION}-1_${OPENWRT_ARCH}.ipk \
        /tailscale-${PACKAGE_VARIANT}_${TAILSCALE_VERSION}.ipk
 
-# =============================================================================
-# Stage 3: Minimal output stage
-# =============================================================================
-FROM busybox:latest
-
-ARG PACKAGE_VARIANT
-ARG TAILSCALE_VERSION
-
-COPY --from=packager /tailscale-${PACKAGE_VARIANT}_${TAILSCALE_VERSION}.ipk /
+# Final output location
+# Extract with: docker run --rm <image> cat /tailscale-*.ipk > package.ipk

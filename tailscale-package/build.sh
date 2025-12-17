@@ -1,9 +1,8 @@
 #!/bin/bash
 set -e
 
-VERSION="${1:-1.88.3}"
-GO_VERSION="${GO_VERSION:-1.23}"  # Go version for compilation
-CLEANUP="${CLEANUP:-0}"           # Set CLEANUP=1 to remove intermediate images
+VERSION="${1:-1.92.2}"
+CLEANUP="${CLEANUP:-0}"  # Set CLEANUP=1 to remove intermediate images
 
 # Verify version exists
 if ! curl -s -f -o /dev/null "https://github.com/tailscale/tailscale/releases/tag/v${VERSION}"; then
@@ -11,14 +10,13 @@ if ! curl -s -f -o /dev/null "https://github.com/tailscale/tailscale/releases/ta
     exit 1
 fi
 
-echo "Building Tailscale ${VERSION} (Go ${GO_VERSION})..."
+echo "Building Tailscale ${VERSION}..."
 mkdir -p packages
 
 # GL.iNet build (mips_24kc - OpenWrt 22.03.4)
 echo "=== Building GL.iNet package (mips_24kc) ==="
 docker build \
     --progress=plain \
-    --build-arg GO_VERSION=${GO_VERSION} \
     --build-arg TAILSCALE_VERSION=${VERSION} \
     --build-arg PACKAGE_VARIANT=glinet-mips24kc \
     --build-arg OPENWRT_ARCH=mips_24kc \
@@ -50,7 +48,6 @@ echo ""
 echo "=== Building Cudy package (aarch64_cortex-a53) ==="
 docker build \
     --progress=plain \
-    --build-arg GO_VERSION=${GO_VERSION} \
     --build-arg TAILSCALE_VERSION=${VERSION} \
     --build-arg PACKAGE_VARIANT=cudy-aarch64 \
     --build-arg OPENWRT_ARCH=aarch64_cortex-a53 \
