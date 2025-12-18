@@ -1,78 +1,148 @@
 # Tailscale for OpenWrt
 
-Pre-built Tailscale packages for OpenWrt routers with exit node killswitch support.
+Pre-built Tailscale packages for OpenWrt routers with automatic network/firewall integration and exit node killswitch support.
+
+## Features
+
+- **Works out of the box** - Network interface and firewall zone created automatically on install
+- **Exit node support** - Route all traffic through a Tailscale exit node
+- **Killswitch** - Block all WAN traffic if exit node fails (no IP leaks)
+- **DNS leak prevention** - Protects both LAN clients and router DNS queries
+- **UCI configuration** - Standard OpenWrt config management
+- **Auto-tuned** - Detects hardware and optimizes for available RAM
+- **Fast builds** - UPX LZMA compression, ~2 minute CI builds
+
+## Supported Architectures
+
+| Architecture | Devices | OpenWrt Version |
+|-------------|---------|-----------------|
+| mips_24kc | GL.iNet E750, AR750S, and similar | 22.03+ |
+| aarch64_cortex-a53 | Cudy TR3000 and similar | 24.10+ |
+
+## Quick Start
+
+### 1. Install
+
+Download from [Releases](https://github.com/coreyleavitt/tailscale-openwrt/releases):
+
+```bash
+cd /tmp
+wget https://github.com/coreyleavitt/tailscale-openwrt/releases/latest/download/tailscale_1.92.3_mips_24kc.ipk
+opkg install tailscale_*.ipk
+```
+
+### 2. Enable and Start
+
+```bash
+uci set tailscale.config.enabled='1'
+uci commit tailscale
+/etc/init.d/tailscale enable
+/etc/init.d/tailscale start
+```
+
+### 3. Authenticate
+
+```bash
+tailscale up --ssh
+# Follow the URL to log in
+```
+
+### 4. Configure Exit Node (Optional)
+
+```bash
+tailscale up --exit-node=<EXIT_NODE_IP> --exit-node-allow-lan-access --ssh
+```
+
+### 5. Enable Killswitch (Recommended for Privacy)
+
+```bash
+tailscale-killswitch enable
+```
+
+The killswitch:
+- Blocks all LAN to WAN traffic
+- Redirects router DNS to Tailscale MagicDNS (100.100.100.100)
+- If exit node fails, NO traffic leaks to your ISP
+
+Check status: `tailscale-killswitch status`
+
+## Commands
+
+| Command | Description |
+|---------|-------------|
+| `tailscale status` | Show connection status |
+| `tailscale-killswitch enable` | Enable WAN blocking killswitch |
+| `tailscale-killswitch disable` | Disable killswitch, restore normal routing |
+| `tailscale-killswitch status` | Check killswitch status |
+| `tailscale-setup` | First-run setup helper |
+
+## UCI Configuration
+
+```bash
+# View config
+uci show tailscale
+
+# Key options
+uci set tailscale.config.enabled='1'      # Enable service
+uci set tailscale.config.killswitch='1'   # Enable killswitch
+uci set tailscale.config.port='41641'     # Listen port
+uci commit tailscale
+```
 
 ## Project Structure
 
 ```
 .
 ├── tailscale-package/      # Core Tailscale IPK packages
-│   ├── Dockerfile          # Docker build for Tailscale binary
-│   ├── build.sh            # Build script for GL.iNet and Cudy variants
+│   ├── Dockerfile          # Docker build for cross-compilation
+│   ├── build.sh            # Local build script
 │   └── src/                # Init scripts, configs, killswitch
 ├── docs/                   # Documentation
-│   ├── INSTALL.md          # Installation guide
-│   └── reset-firewall.sh   # Emergency firewall reset utility
-└── packages/               # Build output (gitignored)
+│   └── INSTALL.md          # Detailed installation guide
+└── .github/workflows/      # CI/CD automation
 ```
 
-## Features
-
-- Direct binary builds (no SDK overhead)
-- Multi-architecture support
-- Exit node with WWAN compatibility
-- Leak-proof killswitch
-- DNS leak prevention
-- UCI configuration
-- Auto-start on boot
-
-## Supported Architectures
-
-| Device | Architecture | OpenWrt Version | Notes |
-|--------|-------------|-----------------|-------|
-| GL.iNet E750/AR750S | mips_24kc | 22.03.4 | 128MB RAM |
-| Cudy TR3000 | aarch64_cortex-a53 | 24.10.3 | Uses `--no-logs-no-support` |
-
-## Installation
-
-### From Release
-
-Download the latest IPK for your architecture from [Releases](https://github.com/coreyleavitt/tailscale-openwrt/releases):
-
-```bash
-cd /tmp
-wget https://github.com/coreyleavitt/tailscale-openwrt/releases/latest/download/tailscale-<variant>_<version>.ipk
-opkg install tailscale-*.ipk
-```
-
-### From Source
+## Building from Source
 
 ```bash
 cd tailscale-package
-./build.sh 1.92.2
+./build.sh 1.92.3
 ```
 
-Output packages are written to `packages/` directory.
+Output: `packages/tailscale_1.92.3_*.ipk`
 
-## Setup
+## How It Works
 
-See [docs/INSTALL.md](docs/INSTALL.md) for detailed setup instructions including:
-- Tailscale authentication
-- Exit node configuration
-- Killswitch setup
-- DNS configuration
-- Troubleshooting
+### On Install (postinst)
+- Creates `tailscale` network interface
+- Creates `tailscale` firewall zone with masquerading
+- Adds LAN <-> Tailscale forwarding rules
+- Detects hardware and configures memory optimizations
 
-## LuCI Web Interface
+### Killswitch Enabled
+- Adds firewall rules blocking LAN -> WAN
+- Redirects router DNS to Tailscale MagicDNS
+- Traffic can ONLY flow through Tailscale
+- Persists across reboots (stored in UCI)
 
-For a modern web interface to manage Tailscale, see [luci-app-tailscale](https://github.com/coreyleavitt/luci-app-tailscale).
-
-Works with this package or any other Tailscale installation (OpenWrt official package, custom builds, etc.).
+### On Uninstall (postrm)
+- Removes all firewall rules and zones
+- Restores original DNS configuration
+- Cleans up network interface
 
 ## Requirements
 
 - OpenWrt 22.x, 23.x, or 24.x
-- Kernel modules: `kmod-tun`, `ca-bundle`
+- Packages: `kmod-tun`, `ca-bundle`, `ip-full`
+
+## Documentation
+
+- [Installation Guide](docs/INSTALL.md) - Detailed setup instructions
+- [Killswitch Details](docs/INSTALL.md#killswitch) - How the killswitch protects you
+
+## Related Projects
+
+- [luci-app-tailscale](https://github.com/coreyleavitt/luci-app-tailscale) - LuCI web interface for Tailscale
 
 ## License
 

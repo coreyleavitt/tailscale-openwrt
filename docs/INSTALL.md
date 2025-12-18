@@ -2,164 +2,320 @@
 
 ## Prerequisites
 
-- OpenWrt router (GL.iNet E750/AR750S or Cudy TR3000)
-- Built IPK package for your architecture
+- OpenWrt 22.x, 23.x, or 24.x router
 - SSH access to the router
+- Physical/console access recommended for initial setup
 
-## Installation Steps
+## Installation
 
-### 1. Transfer IPK to Router
-
-```bash
-scp packages/tailscale-<variant>_<version>.ipk root@<router-ip>:/tmp/
-```
-
-### 2. Install Package
+### Option 1: Download from Releases
 
 ```bash
+# SSH into your router
 ssh root@<router-ip>
-opkg install /tmp/tailscale-<variant>_<version>.ipk
+
+# Download the package for your architecture
+cd /tmp
+
+# For mips_24kc (GL.iNet E750, AR750S, etc.)
+wget https://github.com/coreyleavitt/tailscale-openwrt/releases/latest/download/tailscale_1.92.3_mips_24kc.ipk
+
+# For aarch64_cortex-a53 (Cudy TR3000, etc.)
+wget https://github.com/coreyleavitt/tailscale-openwrt/releases/latest/download/tailscale_1.92.3_aarch64_cortex-a53.ipk
+
+# Install
+opkg install tailscale_*.ipk
 ```
 
-### 3. Configure Tailscale (DO NOT ENABLE YET)
+### Option 2: Build from Source
 
 ```bash
-# Configure but keep disabled initially
+git clone https://github.com/coreyleavitt/tailscale-openwrt.git
+cd tailscale-openwrt/tailscale-package
+./build.sh 1.92.3
+
+# Transfer to router
+scp packages/tailscale_1.92.3_*.ipk root@<router-ip>:/tmp/
+
+# Install on router
+ssh root@<router-ip> "opkg install /tmp/tailscale_*.ipk"
+```
+
+## What Gets Installed
+
+The package automatically configures:
+
+- **Network interface**: `tailscale` (device: tailscale0)
+- **Firewall zone**: `tailscale` with masquerading
+- **Forwarding rules**: LAN <-> Tailscale bidirectional
+- **Memory tuning**: Auto-detected based on available RAM
+
+No manual network or firewall configuration needed.
+
+## Initial Setup
+
+### Step 1: Enable and Start Service
+
+```bash
 uci set tailscale.config.enabled='1'
 uci commit tailscale
+/etc/init.d/tailscale enable
+/etc/init.d/tailscale start
 ```
 
-### 4. Authenticate WITHOUT Exit Node First
+Or use the setup helper:
+```bash
+tailscale-setup
+```
 
-**IMPORTANT: Do this from LAN/WiFi connection, not remote!**
+### Step 2: Authenticate
+
+**Do this from a LAN connection, not remotely!**
 
 ```bash
-# Start service manually (not enabled for boot yet)
-service tailscale start
-
-# Authenticate without exit node
 tailscale up --ssh
 ```
 
-This creates authentication state without modifying routes.
+Follow the URL shown to authenticate with your Tailscale account.
 
-### 5. Verify Basic Connectivity
+The `--ssh` flag is important - it allows SSH access via Tailscale if you get locked out.
+
+### Step 3: Verify Connection
 
 ```bash
-# Check status
 tailscale status
-
-# Ensure SSH still works from LAN
-# Exit and reconnect via SSH to verify
 ```
 
-### 6. Configure Exit Node (Optional)
+You should see your router listed along with other devices on your tailnet.
 
-**CRITICAL: Only do this after verifying step 5 works!**
+## Exit Node Configuration
 
-Get valid exit node name from another device:
+### Finding Your Exit Node
+
+On another device or in the Tailscale admin console, find the IP of your exit node:
+
 ```bash
-tailscale status  # Run on another device to see available exit nodes
+tailscale status
+# Look for a device marked as "offers exit node"
 ```
 
-Then on router, use the **IP address** (safer than hostname):
+### Configuring the Router
+
 ```bash
 tailscale up --exit-node=100.x.x.x --exit-node-allow-lan-access --ssh
 ```
 
-**Flags explained:**
-- `--exit-node=100.x.x.x` - Use this device as exit node (use IP, not hostname!)
-- `--exit-node-allow-lan-access` - REQUIRED: Allows LAN devices to still access router
-- `--ssh` - Allows SSH access even when using exit node
+**Important flags:**
+- `--exit-node=100.x.x.x` - The Tailscale IP of your exit node (use IP, not hostname)
+- `--exit-node-allow-lan-access` - **Required!** Allows LAN devices to still access the router
+- `--ssh` - Allows SSH recovery via Tailscale
 
-### 7. Verify Exit Node Works
+### Verify Exit Node
 
 ```bash
-# Check routes are correct
-ip route
-
-# Verify SSH still works from LAN
-# Exit and reconnect to confirm
-
-# Check exit node is active
+# Check that exit node is active
 tailscale status
+# Should show "exit node; ..." for your exit node
+
+# Test from a LAN device
+curl ifconfig.me
+# Should show the exit node's public IP, not your ISP's
 ```
 
-### 8. Enable Auto-Start (Only After Verification)
+## Killswitch
 
-**ONLY enable auto-start after confirming everything works:**
+The killswitch provides leak protection by blocking all WAN traffic except through Tailscale.
+
+### Enable Killswitch
 
 ```bash
-/etc/init.d/tailscale enable
+tailscale-killswitch enable
 ```
 
-### 9. Test Reboot
+This does three things:
+1. **Blocks all LAN -> WAN traffic** - No direct internet access
+2. **Blocks DNS to WAN** - Prevents DNS leaks from LAN clients
+3. **Redirects router DNS to MagicDNS** - Prevents DNS leaks from the router itself
+
+### Check Status
 
 ```bash
-reboot
+tailscale-killswitch status
+
+# For detailed info
+tailscale-killswitch status --verbose
 ```
 
-After reboot, verify:
-- Router comes back up
-- SSH from LAN still works
-- Tailscale reconnects automatically
-- Exit node is active (if configured)
+### Disable Killswitch
+
+```bash
+tailscale-killswitch disable
+```
+
+This restores normal WAN routing and your original DNS configuration.
+
+### How It Protects You
+
+| Traffic Type | Killswitch OFF | Killswitch ON |
+|-------------|----------------|---------------|
+| LAN -> Internet | Via WAN | Blocked (must use Tailscale) |
+| LAN -> Tailscale | Allowed | Allowed |
+| LAN DNS queries | Via WAN DNS | Blocked to WAN |
+| Router DNS queries | Via WAN DNS | Via MagicDNS (100.100.100.100) |
+
+**If exit node fails with killswitch ON:**
+- All internet traffic stops
+- NO traffic leaks to your ISP
+- Your real IP is never exposed
+
+### Killswitch Persists Across Reboots
+
+The killswitch state is stored in UCI:
+
+```bash
+uci get tailscale.config.killswitch
+# Returns: 1 (enabled) or 0 (disabled)
+```
+
+On boot, the init script automatically re-applies killswitch rules if enabled.
+
+### Verify No Leaks
+
+1. **IP Leak Test**: Visit whatismyip.com from a LAN device - should show exit node IP
+2. **DNS Leak Test**: Visit dnsleaktest.com - should show exit node's DNS servers
+3. **Kill Test**: Stop tailscaled and verify no internet access:
+   ```bash
+   /etc/init.d/tailscale stop
+   # From LAN device: ping 8.8.8.8 should fail
+   /etc/init.d/tailscale start
+   ```
+
+## UCI Configuration Reference
+
+```bash
+# View all configuration
+uci show tailscale
+
+# Main config options
+tailscale.config.enabled='1'       # Enable service (0/1)
+tailscale.config.port='41641'      # Listen port
+tailscale.config.killswitch='0'    # Killswitch state (0/1)
+tailscale.config.log_level=''      # Verbosity (empty for default)
+tailscale.config.extra_args=''     # Additional tailscaled arguments
+
+# Hardware-detected settings (set by postinst)
+tailscale.hardware.mem_limit=''    # GOMEMLIMIT (e.g., '50MiB')
+tailscale.hardware.gogc=''         # GOGC value (e.g., '50')
+tailscale.hardware.no_logs='0'     # Use --no-logs-no-support
+tailscale.hardware.has_wwan='0'    # Watch WWAN interfaces
+```
 
 ## Troubleshooting
 
-### Router Hangs After Enabling Tailscale
+### Router Loses Internet After Exit Node
 
-**Cause:** Invalid exit node hostname or routing conflict
+**Cause:** Exit node is unreachable or routing misconfigured
 
-**Recovery:**
-1. Power cycle router
-2. Immediately SSH in before Tailscale starts
-3. Disable: `/etc/init.d/tailscale disable`
-4. Review configuration and use IP addresses instead of hostnames
+**Fix:**
+```bash
+# Remove exit node
+tailscale up --exit-node= --ssh
 
-### SSH Blocked After Exit Node
+# Or specify a different exit node
+tailscale up --exit-node=100.x.x.x --exit-node-allow-lan-access --ssh
+```
 
-**Cause:** Missing `--exit-node-allow-lan-access` flag
+### Locked Out of Router
 
-**Recovery:**
-1. Reset router (hold reset button 10+ seconds)
-2. Reinstall and follow steps correctly
+**Option 1: SSH via Tailscale** (if --ssh was used)
+```bash
+ssh root@<router-tailscale-ip>
+```
 
-### Cannot Remove Package
+**Option 2: Physical access**
+1. Connect via serial console or physical ethernet
+2. Disable tailscale: `/etc/init.d/tailscale disable`
+3. Reboot and reconfigure
+
+**Option 3: Factory reset** (last resort)
+- Hold reset button for 10+ seconds
+
+### Killswitch Blocks Everything
+
+If you enabled killswitch but Tailscale isn't connected:
 
 ```bash
-opkg remove tailscale-<variant>
+# Disable killswitch to restore WAN access
+tailscale-killswitch disable
+
+# Then fix Tailscale connection
+tailscale up --ssh
+```
+
+### DNS Not Working
+
+```bash
+# Check DNS configuration
+tailscale-killswitch status --verbose
+
+# If killswitch is on, ensure MagicDNS is configured in Tailscale admin
+# Visit: https://login.tailscale.com/admin/dns
+```
+
+### View Logs
+
+```bash
+logread | grep tailscale
 ```
 
 ## Common Commands
 
 ```bash
-# Start/stop service
-service tailscale start
-service tailscale stop
-service tailscale restart
-
-# Enable/disable auto-start
+# Service management
+/etc/init.d/tailscale start
+/etc/init.d/tailscale stop
+/etc/init.d/tailscale restart
 /etc/init.d/tailscale enable
 /etc/init.d/tailscale disable
 
-# Check status
+# Tailscale CLI
 tailscale status
-
-# Change exit node
 tailscale up --exit-node=100.x.x.x --exit-node-allow-lan-access --ssh
+tailscale down
+tailscale ping <device>
 
-# Disable exit node
-tailscale up --exit-node= --ssh
+# Killswitch
+tailscale-killswitch enable
+tailscale-killswitch disable
+tailscale-killswitch status
+tailscale-killswitch status --verbose
 
-# View logs
-logread | grep tailscale
+# Setup helper
+tailscale-setup
+```
+
+## Uninstalling
+
+```bash
+opkg remove tailscale
+```
+
+This automatically:
+- Removes all firewall rules and zones
+- Removes the network interface
+- Restores original DNS configuration (if killswitch was enabled)
+- Preserves `/var/lib/tailscale` for reinstallation
+
+To completely remove all state:
+```bash
+opkg remove tailscale
+rm -rf /var/lib/tailscale
 ```
 
 ## Important Notes
 
-- **Always test from LAN/WiFi first, never remotely**
-- **Use exit node IP addresses, not hostnames**
-- **Always include `--exit-node-allow-lan-access --ssh` flags**
-- **Only enable auto-start after full verification**
-- **Keep physical access to router during initial setup**
+- **Always use `--ssh` flag** - Allows recovery via Tailscale SSH
+- **Use exit node IP, not hostname** - More reliable
+- **Test from LAN first** - Don't configure remotely without a backup plan
+- **Keep physical access** - During initial setup, have console access ready
+- **MagicDNS required for killswitch** - Enable it in Tailscale admin console
