@@ -122,6 +122,43 @@ curl ifconfig.me
 # Should show the exit node's public IP, not your ISP's
 ```
 
+## Advertising as Exit Node
+
+If you want this router to BE an exit node (so other Tailscale devices can route through it):
+
+### Step 1: Enable the Firewall Rule
+
+The forwarding rule is installed but disabled by default for security:
+
+```bash
+uci set firewall.ts_wan_forward.enabled='1'
+uci commit firewall
+/etc/init.d/firewall reload
+```
+
+### Step 2: Advertise Exit Node
+
+```bash
+tailscale up --advertise-exit-node --ssh
+```
+
+### Step 3: Approve in Admin Console
+
+Visit https://login.tailscale.com/admin/machines and approve the exit node.
+
+### Security Note
+
+Enabling `ts_wan_forward` allows authenticated Tailscale users to route internet traffic through your WAN IP. Only enable this if you intentionally want to offer exit node functionality.
+
+To disable:
+
+```bash
+uci set firewall.ts_wan_forward.enabled='0'
+uci commit firewall
+/etc/init.d/firewall reload
+tailscale up --advertise-exit-node=false --ssh
+```
+
 ## Killswitch
 
 The killswitch provides leak protection by blocking all WAN traffic except through Tailscale.

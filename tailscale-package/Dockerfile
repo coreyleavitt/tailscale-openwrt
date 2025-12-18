@@ -155,6 +155,7 @@ uci -q delete firewall.allow_ts_dns
 uci -q delete firewall.tailscale_zone
 uci -q delete firewall.lan_ts_forward
 uci -q delete firewall.ts_lan_forward
+uci -q delete firewall.ts_wan_forward
 
 # Remove network interface
 uci -q delete network.tailscale

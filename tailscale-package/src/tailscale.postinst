@@ -44,6 +44,12 @@ if ! uci -q get firewall.tailscale_zone >/dev/null; then
     uci set firewall.ts_lan_forward.src='tailscale'
     uci set firewall.ts_lan_forward.dest='lan'
 
+    # Tailscale -> WAN: Required if this router advertises as exit node (disabled by default)
+    uci set firewall.ts_wan_forward=forwarding
+    uci set firewall.ts_wan_forward.src='tailscale'
+    uci set firewall.ts_wan_forward.dest='wan'
+    uci set firewall.ts_wan_forward.enabled='0'
+
     uci commit firewall
 fi
 
