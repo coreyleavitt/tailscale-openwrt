@@ -1,5 +1,5 @@
 #!/bin/sh
-# Tailscale postinst - detect hardware and configure optimizations
+# Tailscale postinst - configure network, firewall, and hardware optimizations
 
 # Create state directory with secure permissions
 mkdir -p /var/lib/tailscale
@@ -9,6 +9,49 @@ chmod 700 /var/lib/tailscale
 mkdir -p /var/run/tailscale
 chmod 755 /var/run/tailscale
 
+# --- Network Interface Setup ---
+# Create tailscale interface if it doesn't exist (using named section for easy cleanup)
+if ! uci -q get network.tailscale >/dev/null; then
+    logger -t tailscale "postinst: Creating tailscale network interface"
+    uci set network.tailscale=interface
+    uci set network.tailscale.proto='none'
+    uci set network.tailscale.device='tailscale0'
+    uci commit network
+fi
+
+# --- Firewall Zone Setup ---
+# Create tailscale firewall zone if it doesn't exist (using named section for easy cleanup)
+if ! uci -q get firewall.tailscale_zone >/dev/null; then
+    logger -t tailscale "postinst: Creating tailscale firewall zone and forwarding rules"
+
+    # Create the zone
+    uci set firewall.tailscale_zone=zone
+    uci set firewall.tailscale_zone.name='tailscale'
+    uci set firewall.tailscale_zone.input='ACCEPT'
+    uci set firewall.tailscale_zone.output='ACCEPT'
+    uci set firewall.tailscale_zone.forward='REJECT'
+    uci set firewall.tailscale_zone.masq='1'
+    uci set firewall.tailscale_zone.mtu_fix='1'
+    uci set firewall.tailscale_zone.device='tailscale0'
+
+    # LAN -> Tailscale: Allow LAN devices to reach tailnet and use exit node
+    uci set firewall.lan_ts_forward=forwarding
+    uci set firewall.lan_ts_forward.src='lan'
+    uci set firewall.lan_ts_forward.dest='tailscale'
+
+    # Tailscale -> LAN: Allow tailnet to reach LAN (for --exit-node-allow-lan-access)
+    uci set firewall.ts_lan_forward=forwarding
+    uci set firewall.ts_lan_forward.src='tailscale'
+    uci set firewall.ts_lan_forward.dest='lan'
+
+    uci commit firewall
+fi
+
+# Reload network and firewall to apply changes
+/etc/init.d/network reload 2>/dev/null || true
+/etc/init.d/firewall reload 2>/dev/null || true
+
+# --- Hardware Detection ---
 # Detect total RAM in MB
 total_ram=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo)
 

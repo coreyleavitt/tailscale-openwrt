@@ -90,15 +90,17 @@ RUN cp /build/tailscaled usr/sbin/ && \
     chmod 755 usr/sbin/tailscaled && \
     ln -s ../sbin/tailscaled usr/bin/tailscale
 
-# Copy unified init script, config, and killswitch
+# Copy unified init script, config, killswitch, and setup helper
 COPY src/ /tmp/files/
 RUN cp /tmp/files/tailscale.init etc/init.d/tailscale && \
     cp /tmp/files/tailscale.config etc/config/tailscale && \
-    cp /tmp/files/tailscale-killswitch.sh usr/sbin/tailscale-killswitch
+    cp /tmp/files/tailscale-killswitch.sh usr/sbin/tailscale-killswitch && \
+    cp /tmp/files/tailscale-setup.sh usr/sbin/tailscale-setup
 
 RUN chmod 755 etc/init.d/tailscale && \
     chmod 644 etc/config/tailscale && \
-    chmod 755 usr/sbin/tailscale-killswitch
+    chmod 755 usr/sbin/tailscale-killswitch && \
+    chmod 755 usr/sbin/tailscale-setup
 
 # Create control file
 RUN cat > CONTROL/control <<EOF
@@ -142,6 +144,40 @@ RUN chmod 755 CONTROL/prerm
 # Create postrm script
 RUN cat > CONTROL/postrm <<'POSTRM'
 #!/bin/sh
+# Clean up all Tailscale configuration on removal
+
+# Remove killswitch blocking rules
+uci -q delete firewall.lan_to_wan_block
+uci -q delete firewall.block_wan_dns
+uci -q delete firewall.allow_ts_dns
+
+# Remove tailscale zone and forwarding rules
+uci -q delete firewall.tailscale_zone
+uci -q delete firewall.lan_ts_forward
+uci -q delete firewall.ts_lan_forward
+
+# Remove network interface
+uci -q delete network.tailscale
+
+# Restore DNS config if killswitch was enabled
+DNS_BACKUP="/var/lib/tailscale/dns_backup"
+if [ -f "$DNS_BACKUP" ]; then
+    uci -q delete dhcp.@dnsmasq[0].server
+    while IFS= read -r server || [ -n "$server" ]; do
+        [ -n "$server" ] && uci add_list dhcp.@dnsmasq[0].server="$server"
+    done < "$DNS_BACKUP"
+    uci -q delete dhcp.@dnsmasq[0].noresolv
+    rm -f "$DNS_BACKUP"
+    uci commit dhcp
+    /etc/init.d/dnsmasq restart 2>/dev/null || true
+fi
+
+# Commit and reload network/firewall
+uci commit firewall 2>/dev/null || true
+uci commit network 2>/dev/null || true
+/etc/init.d/firewall reload 2>/dev/null || true
+/etc/init.d/network reload 2>/dev/null || true
+
 # Clean up runtime files
 rm -rf /var/run/tailscale
 

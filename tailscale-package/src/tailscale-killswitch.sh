@@ -2,14 +2,19 @@
 #
 # Tailscale Exit Node Killswitch for OpenWrt 22.x, 23.x, and 24.x
 # Blocks all WAN traffic except through Tailscale exit node.
-# Includes DNS leak prevention.
+# Includes DNS leak prevention for both LAN clients and router.
+#
+# The firewall zone is created by postinst and persists.
+# This script only manages the blocking rules and router DNS config.
 #
 
 # --- Configuration ---
 TAILSCALE_INTERFACE="tailscale0"
-TAILSCALE_ZONE_NAME="ts"
+TAILSCALE_ZONE_NAME="tailscale"
 LAN_ZONE_NAME="lan"
 WAN_ZONE_NAME="wan"
+DNS_BACKUP_FILE="/var/lib/tailscale/dns_backup"
+MAGIC_DNS="100.100.100.100"
 
 # --- Functions ---
 
@@ -36,62 +41,44 @@ verify_interface() {
     fi
 }
 
-reload_firewall() {
-    echo "Applying firewall changes..."
-    uci commit firewall
-
-    if ! /etc/init.d/firewall reload; then
-        echo "ERROR: Firewall reload failed!"
-        echo "Check firewall config: uci show firewall"
+verify_zone() {
+    if ! uci -q get firewall.tailscale_zone >/dev/null; then
+        echo "ERROR: Tailscale firewall zone not found."
+        echo "This should have been created during package installation."
+        echo "Try reinstalling the tailscale package."
         return 1
     fi
     return 0
 }
 
-enable_killswitch() {
-    echo "Enabling Tailscale exit node killswitch..."
-    get_openwrt_version
-    echo "Detected OpenWrt major version: ${OPENWRT_MAJOR_VERSION}"
+reload_services() {
+    echo "Applying changes..."
+    uci commit firewall
+    uci commit dhcp
+    uci commit tailscale
 
-    verify_interface
+    /etc/init.d/firewall reload 2>/dev/null || {
+        echo "WARNING: Firewall reload failed"
+    }
+    /etc/init.d/dnsmasq restart 2>/dev/null || {
+        echo "WARNING: dnsmasq restart failed"
+    }
+}
 
-    # 1. Clean up any existing killswitch rules
-    uci -q delete firewall.${TAILSCALE_ZONE_NAME} || true
-    uci -q delete firewall.lan_to_ts_forwarding || true
-    uci -q delete firewall.lan_to_wan_block || true
-    uci -q delete firewall.block_wan_dns || true
-    uci -q delete firewall.allow_ts_dns || true
+apply_blocking_rules() {
+    # Add blocking rules (used by both enable and apply-rules)
 
-    # 2. Create Tailscale zone and forwarding rules
-    uci batch <<EOF
-set firewall.${TAILSCALE_ZONE_NAME}=zone
-set firewall.${TAILSCALE_ZONE_NAME}.name='${TAILSCALE_ZONE_NAME}'
-set firewall.${TAILSCALE_ZONE_NAME}.input='REJECT'
-set firewall.${TAILSCALE_ZONE_NAME}.output='ACCEPT'
-set firewall.${TAILSCALE_ZONE_NAME}.forward='REJECT'
-set firewall.${TAILSCALE_ZONE_NAME}.masq='1'
-set firewall.${TAILSCALE_ZONE_NAME}.mtu_fix='1'
-add_list firewall.${TAILSCALE_ZONE_NAME}.device='${TAILSCALE_INTERFACE}'
-
-set firewall.lan_to_ts_forwarding=forwarding
-set firewall.lan_to_ts_forwarding.name='Allow LAN to Tailscale'
-set firewall.lan_to_ts_forwarding.src='${LAN_ZONE_NAME}'
-set firewall.lan_to_ts_forwarding.dest='${TAILSCALE_ZONE_NAME}'
-EOF
-
-    # 3. Block LAN to WAN traffic (works for both fw3 and fw4)
-    echo "Adding LAN to WAN block rule..."
+    # 1. Block LAN to WAN traffic
     uci set firewall.lan_to_wan_block=rule
-    uci set firewall.lan_to_wan_block.name='Block LAN to WAN (Tailscale Killswitch)'
+    uci set firewall.lan_to_wan_block.name='Block LAN to WAN (Killswitch)'
     uci set firewall.lan_to_wan_block.src="${LAN_ZONE_NAME}"
     uci set firewall.lan_to_wan_block.dest="${WAN_ZONE_NAME}"
     uci set firewall.lan_to_wan_block.target='REJECT'
     uci set firewall.lan_to_wan_block.family='any'
 
-    # 4. DNS leak prevention - block DNS to WAN, allow to Tailscale
-    echo "Adding DNS leak prevention rules..."
+    # 2. Block DNS to WAN (prevent LAN client DNS leaks)
     uci set firewall.block_wan_dns=rule
-    uci set firewall.block_wan_dns.name='Block WAN DNS (Prevent Leaks)'
+    uci set firewall.block_wan_dns.name='Block WAN DNS (Killswitch)'
     uci set firewall.block_wan_dns.src="${LAN_ZONE_NAME}"
     uci set firewall.block_wan_dns.dest="${WAN_ZONE_NAME}"
     uci set firewall.block_wan_dns.dest_port='53'
@@ -99,8 +86,9 @@ EOF
     uci set firewall.block_wan_dns.target='REJECT'
     uci set firewall.block_wan_dns.family='any'
 
+    # 3. Allow DNS to Tailscale zone
     uci set firewall.allow_ts_dns=rule
-    uci set firewall.allow_ts_dns.name='Allow Tailscale DNS'
+    uci set firewall.allow_ts_dns.name='Allow Tailscale DNS (Killswitch)'
     uci set firewall.allow_ts_dns.src="${LAN_ZONE_NAME}"
     uci set firewall.allow_ts_dns.dest="${TAILSCALE_ZONE_NAME}"
     uci set firewall.allow_ts_dns.dest_port='53'
@@ -108,60 +96,179 @@ EOF
     uci set firewall.allow_ts_dns.target='ACCEPT'
     uci set firewall.allow_ts_dns.family='any'
 
-    if reload_firewall; then
-        echo "Killswitch enabled successfully."
+    uci commit firewall
+}
+
+remove_blocking_rules() {
+    # Remove blocking rules
+    uci -q delete firewall.lan_to_wan_block
+    uci -q delete firewall.block_wan_dns
+    uci -q delete firewall.allow_ts_dns
+    uci commit firewall
+}
+
+configure_router_dns() {
+    # Redirect router's dnsmasq to use Tailscale MagicDNS
+    echo "Configuring router DNS to use Tailscale MagicDNS..."
+
+    # Backup current DNS servers
+    uci -q get dhcp.@dnsmasq[0].server > "$DNS_BACKUP_FILE" 2>/dev/null || true
+
+    # Point dnsmasq to Tailscale MagicDNS
+    uci -q delete dhcp.@dnsmasq[0].server
+    uci add_list dhcp.@dnsmasq[0].server="$MAGIC_DNS"
+    uci set dhcp.@dnsmasq[0].noresolv='1'
+    uci commit dhcp
+}
+
+restore_router_dns() {
+    # Restore router's original DNS configuration
+    echo "Restoring router DNS configuration..."
+
+    if [ -f "$DNS_BACKUP_FILE" ]; then
+        uci -q delete dhcp.@dnsmasq[0].server
+        while IFS= read -r server || [ -n "$server" ]; do
+            [ -n "$server" ] && uci add_list dhcp.@dnsmasq[0].server="$server"
+        done < "$DNS_BACKUP_FILE"
+        uci -q delete dhcp.@dnsmasq[0].noresolv
+        rm -f "$DNS_BACKUP_FILE"
     else
-        echo "Killswitch configuration saved but firewall reload failed."
-        return 1
+        # No backup, just remove our config
+        uci -q delete dhcp.@dnsmasq[0].noresolv
     fi
+    uci commit dhcp
+}
+
+enable_killswitch() {
+    echo "Enabling Tailscale exit node killswitch..."
+    get_openwrt_version
+    echo "Detected OpenWrt major version: ${OPENWRT_MAJOR_VERSION}"
+
+    verify_zone || return 1
+    verify_interface
+
+    # Clean up any existing rules first
+    remove_blocking_rules
+
+    # Set UCI state
+    uci set tailscale.config.killswitch='1'
+
+    # Apply blocking rules
+    echo "Adding firewall blocking rules..."
+    apply_blocking_rules
+
+    # Configure router DNS
+    configure_router_dns
+
+    # Reload services
+    reload_services
+
+    echo ""
+    echo "Killswitch enabled successfully."
+    echo "  - All LAN to WAN traffic blocked"
+    echo "  - DNS redirected to Tailscale MagicDNS"
+    echo "  - Traffic can only flow through Tailscale exit node"
 }
 
 disable_killswitch() {
     echo "Disabling Tailscale exit node killswitch..."
 
-    # Remove all killswitch-related rules
-    uci -q delete firewall.lan_to_wan_block || true
-    uci -q delete firewall.block_wan_dns || true
-    uci -q delete firewall.allow_ts_dns || true
-    uci -q delete firewall.${TAILSCALE_ZONE_NAME} || true
-    uci -q delete firewall.lan_to_ts_forwarding || true
+    # Set UCI state
+    uci set tailscale.config.killswitch='0'
 
-    if reload_firewall; then
-        echo "Killswitch disabled successfully."
-    else
-        echo "Killswitch configuration removed but firewall reload failed."
-        return 1
+    # Remove blocking rules
+    echo "Removing firewall blocking rules..."
+    remove_blocking_rules
+
+    # Restore router DNS
+    restore_router_dns
+
+    # Reload services
+    reload_services
+
+    echo ""
+    echo "Killswitch disabled successfully."
+    echo "  - Normal WAN routing restored"
+    echo "  - Original DNS configuration restored"
+}
+
+apply_rules() {
+    # Called by init script on startup if killswitch is enabled
+    # Silently applies rules without full enable process
+    local killswitch
+    killswitch=$(uci -q get tailscale.config.killswitch)
+
+    if [ "$killswitch" = "1" ]; then
+        # Check if rules already exist
+        if uci -q get firewall.lan_to_wan_block >/dev/null; then
+            return 0  # Already applied
+        fi
+
+        logger -t tailscale "Applying killswitch rules on startup"
+        apply_blocking_rules
+
+        # Ensure DNS is configured
+        if [ ! -f "$DNS_BACKUP_FILE" ]; then
+            # First time after reboot, backup and configure DNS
+            uci -q get dhcp.@dnsmasq[0].server > "$DNS_BACKUP_FILE" 2>/dev/null || true
+        fi
+        uci -q delete dhcp.@dnsmasq[0].server
+        uci add_list dhcp.@dnsmasq[0].server="$MAGIC_DNS"
+        uci set dhcp.@dnsmasq[0].noresolv='1'
+        uci commit dhcp
+        uci commit firewall
+
+        /etc/init.d/firewall reload 2>/dev/null || true
+        /etc/init.d/dnsmasq restart 2>/dev/null || true
     fi
 }
 
 check_status() {
-    if uci -q get firewall.${TAILSCALE_ZONE_NAME} >/dev/null 2>&1; then
-        echo "Killswitch status: ENABLED (config present)"
+    local killswitch
+    killswitch=$(uci -q get tailscale.config.killswitch)
 
-        # Verify rules are actually loaded in firewall
-        get_openwrt_version
-        if [ "${OPENWRT_MAJOR_VERSION}" -ge "23" ]; then
-            # Check nftables for the rule
-            if command -v nft >/dev/null 2>&1; then
-                if nft list ruleset 2>/dev/null | grep -q "Block LAN to WAN"; then
-                    echo "Firewall rules: ACTIVE"
-                else
-                    echo "WARNING: Config exists but rules may not be loaded. Try: /etc/init.d/firewall reload"
+    if [ "$killswitch" = "1" ]; then
+        echo "Killswitch: ENABLED (UCI)"
+
+        # Check if rules are actually present
+        if uci -q get firewall.lan_to_wan_block >/dev/null; then
+            echo "Firewall rules: CONFIGURED"
+
+            # Verify rules are loaded
+            get_openwrt_version
+            if [ "${OPENWRT_MAJOR_VERSION}" -ge "23" ]; then
+                if command -v nft >/dev/null 2>&1; then
+                    if nft list ruleset 2>/dev/null | grep -q "Block LAN to WAN"; then
+                        echo "Firewall rules: ACTIVE"
+                    else
+                        echo "WARNING: Rules configured but may not be loaded. Try: /etc/init.d/firewall reload"
+                    fi
+                fi
+            else
+                if command -v iptables >/dev/null 2>&1; then
+                    if iptables -L FORWARD -n 2>/dev/null | grep -q "REJECT"; then
+                        echo "Firewall rules: ACTIVE"
+                    else
+                        echo "WARNING: Rules configured but may not be loaded. Try: /etc/init.d/firewall reload"
+                    fi
                 fi
             fi
         else
-            # Check iptables for reject rule
-            if command -v iptables >/dev/null 2>&1; then
-                if iptables -L FORWARD -n 2>/dev/null | grep -q "REJECT"; then
-                    echo "Firewall rules: ACTIVE"
-                else
-                    echo "WARNING: Config exists but rules may not be loaded. Try: /etc/init.d/firewall reload"
-                fi
-            fi
+            echo "WARNING: Killswitch enabled but rules not present. Run: tailscale-killswitch enable"
         fi
+
+        # Check DNS configuration
+        local dns_server
+        dns_server=$(uci -q get dhcp.@dnsmasq[0].server)
+        if echo "$dns_server" | grep -q "$MAGIC_DNS"; then
+            echo "Router DNS: MagicDNS ($MAGIC_DNS)"
+        else
+            echo "WARNING: Router DNS not pointing to MagicDNS"
+        fi
+
         return 0
     else
-        echo "Killswitch status: DISABLED"
+        echo "Killswitch: DISABLED"
         return 1
     fi
 }
@@ -170,32 +277,34 @@ check_status_verbose() {
     check_status
     local status=$?
 
-    if [ $status -ne 0 ]; then
-        return 1
-    fi
+    echo ""
+    echo "--- Detailed Configuration ---"
 
     echo ""
-    echo "--- Detailed Firewall Configuration ---"
+    echo "UCI State:"
+    echo "  tailscale.config.killswitch = $(uci -q get tailscale.config.killswitch || echo '(not set)')"
 
     echo ""
-    echo "Tailscale Zone:"
-    uci show firewall.${TAILSCALE_ZONE_NAME} 2>/dev/null || echo "  (not configured)"
+    echo "Firewall Zone:"
+    uci show firewall.tailscale_zone 2>/dev/null || echo "  (not configured - run postinst)"
 
     echo ""
-    echo "LAN to Tailscale Forwarding:"
-    uci show firewall.lan_to_ts_forwarding 2>/dev/null || echo "  (not configured)"
-
-    echo ""
-    echo "LAN to WAN Block Rule:"
+    echo "LAN to WAN Block:"
     uci show firewall.lan_to_wan_block 2>/dev/null || echo "  (not configured)"
 
     echo ""
-    echo "DNS Leak Prevention - Block WAN DNS:"
+    echo "Block WAN DNS:"
     uci show firewall.block_wan_dns 2>/dev/null || echo "  (not configured)"
 
     echo ""
-    echo "DNS Leak Prevention - Allow Tailscale DNS:"
+    echo "Allow Tailscale DNS:"
     uci show firewall.allow_ts_dns 2>/dev/null || echo "  (not configured)"
+
+    echo ""
+    echo "Router DNS Config:"
+    echo "  Servers: $(uci -q get dhcp.@dnsmasq[0].server || echo '(default)')"
+    echo "  noresolv: $(uci -q get dhcp.@dnsmasq[0].noresolv || echo '(not set)')"
+    echo "  Backup exists: $([ -f "$DNS_BACKUP_FILE" ] && echo 'yes' || echo 'no')"
 
     echo ""
     echo "--- Interface Status ---"
@@ -208,6 +317,7 @@ check_status_verbose() {
     fi
 
     echo "---------------------------------------"
+    return $status
 }
 
 # --- Main Logic ---
@@ -217,6 +327,10 @@ case "$1" in
         ;;
     disable)
         disable_killswitch
+        ;;
+    apply-rules)
+        # Called by init script - silent operation
+        apply_rules
         ;;
     status)
         if [ "$2" = "--verbose" ] || [ "$2" = "-v" ]; then
@@ -236,10 +350,13 @@ case "$1" in
         echo "  status   - Check if killswitch is enabled"
         echo ""
         echo "When enabled, this script:"
-        echo "  - Creates a firewall zone for Tailscale"
         echo "  - Blocks all LAN to WAN traffic"
-        echo "  - Allows LAN to Tailscale forwarding"
-        echo "  - Prevents DNS leaks by blocking WAN DNS"
+        echo "  - Redirects router DNS to Tailscale MagicDNS (100.100.100.100)"
+        echo "  - Prevents DNS leaks from both LAN clients and the router"
+        echo "  - If Tailscale/exit node fails, NO traffic leaks to WAN"
+        echo ""
+        echo "State is stored in UCI: tailscale.config.killswitch"
+        echo "Use 'uci show tailscale' to view configuration."
         exit 1
         ;;
 esac
