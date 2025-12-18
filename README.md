@@ -56,7 +56,7 @@ tailscale up --exit-node=<EXIT_NODE_IP> --exit-node-allow-lan-access --ssh
 ### 5. Enable Killswitch (Recommended for Privacy)
 
 ```bash
-tailscale-killswitch enable
+tailscale killswitch enable
 ```
 
 The killswitch:
@@ -64,16 +64,19 @@ The killswitch:
 - Redirects router DNS to Tailscale MagicDNS (100.100.100.100)
 - If exit node fails, NO traffic leaks to your ISP
 
-Check status: `tailscale-killswitch status`
+Check status: `tailscale killswitch status`
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
 | `tailscale status` | Show connection status |
-| `tailscale-killswitch enable` | Enable WAN blocking killswitch |
-| `tailscale-killswitch disable` | Disable killswitch, restore normal routing |
-| `tailscale-killswitch status` | Check killswitch status |
+| `tailscale killswitch enable` | Enable WAN blocking killswitch |
+| `tailscale killswitch disable` | Disable killswitch, restore normal routing |
+| `tailscale killswitch status` | Check killswitch status |
+| `tailscale exitnode enable` | Advertise this router as an exit node |
+| `tailscale exitnode disable` | Stop advertising as exit node |
+| `tailscale exitnode status` | Check exit node status |
 | `tailscale-setup` | First-run setup helper |
 
 ## UCI Configuration

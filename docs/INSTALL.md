@@ -126,38 +126,44 @@ curl ifconfig.me
 
 If you want this router to BE an exit node (so other Tailscale devices can route through it):
 
-### Step 1: Enable the Firewall Rule
-
-The forwarding rule is installed but disabled by default for security:
+### Enable Exit Node
 
 ```bash
-uci set firewall.ts_wan_forward.enabled='1'
-uci commit firewall
-/etc/init.d/firewall reload
+tailscale exitnode enable
 ```
 
-### Step 2: Advertise Exit Node
+This does two things:
+1. Enables the firewall forwarding rule (tailscale -> wan)
+2. Advertises this router as an exit node
+
+After running, approve the exit node in the admin console:
+https://login.tailscale.com/admin/machines
+
+### Check Status
+
+```bash
+tailscale exitnode status
+```
+
+### Disable Exit Node
+
+```bash
+tailscale exitnode disable
+```
+
+### Alternative: Standard Tailscale Command
+
+You can also use the standard Tailscale command:
 
 ```bash
 tailscale up --advertise-exit-node --ssh
 ```
 
-### Step 3: Approve in Admin Console
-
-Visit https://login.tailscale.com/admin/machines and approve the exit node.
+The wrapper automatically enables/disables the firewall rule when it detects `--advertise-exit-node`.
 
 ### Security Note
 
-Enabling `ts_wan_forward` allows authenticated Tailscale users to route internet traffic through your WAN IP. Only enable this if you intentionally want to offer exit node functionality.
-
-To disable:
-
-```bash
-uci set firewall.ts_wan_forward.enabled='0'
-uci commit firewall
-/etc/init.d/firewall reload
-tailscale up --advertise-exit-node=false --ssh
-```
+Enabling exit node allows authenticated Tailscale users to route internet traffic through your WAN IP. Only enable this if you intentionally want to offer exit node functionality.
 
 ## Killswitch
 
@@ -166,7 +172,7 @@ The killswitch provides leak protection by blocking all WAN traffic except throu
 ### Enable Killswitch
 
 ```bash
-tailscale-killswitch enable
+tailscale killswitch enable
 ```
 
 This does three things:
@@ -177,16 +183,16 @@ This does three things:
 ### Check Status
 
 ```bash
-tailscale-killswitch status
+tailscale killswitch status
 
 # For detailed info
-tailscale-killswitch status --verbose
+tailscale killswitch status --verbose
 ```
 
 ### Disable Killswitch
 
 ```bash
-tailscale-killswitch disable
+tailscale killswitch disable
 ```
 
 This restores normal WAN routing and your original DNS configuration.
@@ -283,7 +289,7 @@ If you enabled killswitch but Tailscale isn't connected:
 
 ```bash
 # Disable killswitch to restore WAN access
-tailscale-killswitch disable
+tailscale killswitch disable
 
 # Then fix Tailscale connection
 tailscale up --ssh
@@ -293,7 +299,7 @@ tailscale up --ssh
 
 ```bash
 # Check DNS configuration
-tailscale-killswitch status --verbose
+tailscale killswitch status --verbose
 
 # If killswitch is on, ensure MagicDNS is configured in Tailscale admin
 # Visit: https://login.tailscale.com/admin/dns
@@ -322,10 +328,15 @@ tailscale down
 tailscale ping <device>
 
 # Killswitch
-tailscale-killswitch enable
-tailscale-killswitch disable
-tailscale-killswitch status
-tailscale-killswitch status --verbose
+tailscale killswitch enable
+tailscale killswitch disable
+tailscale killswitch status
+tailscale killswitch status --verbose
+
+# Exit node (advertise this router)
+tailscale exitnode enable
+tailscale exitnode disable
+tailscale exitnode status
 
 # Setup helper
 tailscale-setup

@@ -85,21 +85,24 @@ RUN mkdir -p usr/sbin \
     etc/config \
     CONTROL
 
-# Copy binary and create symlink
+# Copy binary
 RUN cp /build/tailscaled usr/sbin/ && \
-    chmod 755 usr/sbin/tailscaled && \
-    ln -s ../sbin/tailscaled usr/bin/tailscale
+    chmod 755 usr/sbin/tailscaled
 
-# Copy unified init script, config, killswitch, and setup helper
+# Copy scripts from src/
 COPY src/ /tmp/files/
 RUN cp /tmp/files/tailscale.init etc/init.d/tailscale && \
     cp /tmp/files/tailscale.config etc/config/tailscale && \
+    cp /tmp/files/tailscale-wrapper.sh usr/bin/tailscale && \
     cp /tmp/files/tailscale-killswitch.sh usr/sbin/tailscale-killswitch && \
+    cp /tmp/files/tailscale-exitnode.sh usr/sbin/tailscale-exitnode && \
     cp /tmp/files/tailscale-setup.sh usr/sbin/tailscale-setup
 
 RUN chmod 755 etc/init.d/tailscale && \
     chmod 644 etc/config/tailscale && \
+    chmod 755 usr/bin/tailscale && \
     chmod 755 usr/sbin/tailscale-killswitch && \
+    chmod 755 usr/sbin/tailscale-exitnode && \
     chmod 755 usr/sbin/tailscale-setup
 
 # Create control file
