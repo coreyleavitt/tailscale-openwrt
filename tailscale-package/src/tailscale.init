@@ -72,6 +72,31 @@ start_service() {
         # Delay slightly to ensure tailscaled is starting
         ( sleep 2 && /usr/sbin/tailscale-killswitch apply-rules ) &
     fi
+
+    # Auto-authenticate with authkey on first start
+    local authkey
+    config_get authkey config authkey ""
+    if [ -n "$authkey" ] && [ ! -f /var/lib/tailscale/tailscaled.state ]; then
+        (
+            # Wait for tailscaled to be ready
+            sleep 3
+            for i in 1 2 3 4 5; do
+                if /usr/bin/tailscale status >/dev/null 2>&1; then
+                    break
+                fi
+                sleep 1
+            done
+            # Authenticate with the provided key
+            logger -t tailscale "Auto-authenticating with authkey"
+            if /usr/bin/tailscale up --authkey="$authkey" --ssh; then
+                logger -t tailscale "Authentication successful, clearing authkey from config"
+                uci delete tailscale.config.authkey
+                uci commit tailscale
+            else
+                logger -t tailscale "Authentication failed"
+            fi
+        ) &
+    fi
 }
 
 reload_service() {

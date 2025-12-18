@@ -47,6 +47,13 @@ tailscale up --ssh
 # Follow the URL to log in
 ```
 
+Or for headless/automated setup, use an auth key:
+```bash
+uci set tailscale.config.authkey='tskey-auth-xxxxx'
+uci commit tailscale
+/etc/init.d/tailscale restart
+```
+
 ### 4. Configure Exit Node (Optional)
 
 ```bash

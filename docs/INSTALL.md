@@ -88,6 +88,40 @@ tailscale status
 
 You should see your router listed along with other devices on your tailnet.
 
+## Headless Setup (Auth Key)
+
+For automated or remote deployments, you can use an auth key to skip the interactive authentication step.
+
+### Step 1: Generate an Auth Key
+
+1. Visit https://login.tailscale.com/admin/settings/keys
+2. Generate an auth key (reusable or single-use)
+3. Copy the key (starts with `tskey-auth-`)
+
+### Step 2: Configure and Start
+
+```bash
+uci set tailscale.config.enabled='1'
+uci set tailscale.config.authkey='tskey-auth-xxxxx'
+uci commit tailscale
+/etc/init.d/tailscale enable
+/etc/init.d/tailscale start
+```
+
+The router will automatically authenticate on first start. The auth key is cleared from config after successful authentication for security.
+
+### One-liner for Scripts
+
+```bash
+uci set tailscale.config.enabled='1' && \
+uci set tailscale.config.authkey='tskey-auth-xxxxx' && \
+uci commit tailscale && \
+/etc/init.d/tailscale enable && \
+/etc/init.d/tailscale start
+```
+
+Check logs with: `logread | grep tailscale`
+
 ## Exit Node Configuration
 
 ### Finding Your Exit Node
@@ -243,6 +277,7 @@ uci show tailscale
 tailscale.config.enabled='1'       # Enable service (0/1)
 tailscale.config.port='41641'      # Listen port
 tailscale.config.killswitch='0'    # Killswitch state (0/1)
+tailscale.config.authkey=''        # Auth key for headless setup (cleared after use)
 tailscale.config.log_level=''      # Verbosity (empty for default)
 tailscale.config.extra_args=''     # Additional tailscaled arguments
 
