@@ -4,15 +4,18 @@
 # Build arguments:
 #   TAILSCALE_VERSION - Tailscale version to build (e.g., 1.92.2)
 #   OPENWRT_ARCH      - OpenWrt architecture (mips_24kc or aarch64_cortex-a53)
+#   PKG_RELEASE       - Package release number (default: 1)
 
 ARG TAILSCALE_VERSION=1.92.2
 ARG OPENWRT_ARCH=mips_24kc
+ARG PKG_RELEASE=1
 ARG SKIP_UPX=0
 
 FROM registry.opensuse.org/opensuse/tumbleweed:latest
 
 ARG TAILSCALE_VERSION
 ARG OPENWRT_ARCH
+ARG PKG_RELEASE
 ARG SKIP_UPX
 
 # Install all build dependencies
@@ -111,7 +114,7 @@ RUN chmod 755 etc/init.d/tailscale && \
 # Create control file
 RUN cat > CONTROL/control <<EOF
 Package: tailscale
-Version: ${TAILSCALE_VERSION}-1
+Version: ${TAILSCALE_VERSION}-${PKG_RELEASE}
 Architecture: ${OPENWRT_ARCH}
 Maintainer: Community Build
 Section: net
@@ -204,7 +207,7 @@ RUN echo "=== Package contents ===" && \
 
 # Build the IPK
 RUN opkg-build /ipk /tmp && \
-    mv /tmp/tailscale_${TAILSCALE_VERSION}-1_${OPENWRT_ARCH}.ipk \
+    mv /tmp/tailscale_${TAILSCALE_VERSION}-${PKG_RELEASE}_${OPENWRT_ARCH}.ipk \
        /tailscale_${TAILSCALE_VERSION}_${OPENWRT_ARCH}.ipk
 
 # Final output location

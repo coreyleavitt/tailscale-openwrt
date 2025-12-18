@@ -8,38 +8,40 @@ on:
 jobs:
   check:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
       - name: Get latest Tailscale release
         id: tailscale
         run: |
           LATEST=$(curl -s https://api.github.com/repos/tailscale/tailscale/releases/latest | jq -r .tag_name)
-          echo "latest=$LATEST" >> $GITHUB_OUTPUT
-          echo "Latest Tailscale release: $LATEST"
+          # Strip 'v' prefix for version number
+          VERSION="${LATEST#v}"
+          echo "tag=$LATEST" >> $GITHUB_OUTPUT
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Latest Tailscale release: $LATEST (version: $VERSION)"
 
-      - name: Check if we have this version
+      - name: Check if we have a release for this version
         id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          LATEST="${{ steps.tailscale.outputs.latest }}"
-          if git tag -l "$LATEST" | grep -q "$LATEST"; then
-            echo "Already have $LATEST"
-            echo "new_release=false" >> $GITHUB_OUTPUT
+          TAG="${{ steps.tailscale.outputs.tag }}"
+          # Check if release exists in our repo
+          if gh release view "$TAG" --repo ${{ github.repository }} >/dev/null 2>&1; then
+            echo "Already have release for $TAG"
+            echo "needs_build=false" >> $GITHUB_OUTPUT
           else
-            echo "New release found: $LATEST"
-            echo "new_release=true" >> $GITHUB_OUTPUT
+            echo "No release found for $TAG - triggering build"
+            echo "needs_build=true" >> $GITHUB_OUTPUT
           fi
 
-      - name: Create tag for new release
-        if: steps.check.outputs.new_release == 'true'
+      - name: Trigger build workflow
+        if: steps.check.outputs.needs_build == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          LATEST="${{ steps.tailscale.outputs.latest }}"
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -a "$LATEST" -m "Tailscale $LATEST"
-          git push origin "$LATEST"
+          VERSION="${{ steps.tailscale.outputs.version }}"
+          echo "Triggering build for Tailscale $VERSION"
+          gh workflow run build-tailscale.yaml \
+            --repo ${{ github.repository }} \
+            -f tailscale_version="$VERSION" \
+            -f pkg_release="1"

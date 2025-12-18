@@ -2,6 +2,7 @@
 set -e
 
 VERSION="${1:-1.92.2}"
+PKG_RELEASE="${2:-1}"
 CLEANUP="${CLEANUP:-0}"  # Set CLEANUP=1 to remove intermediate images
 
 # Verify version exists
@@ -10,7 +11,7 @@ if ! curl -s -f -o /dev/null "https://github.com/tailscale/tailscale/releases/ta
     exit 1
 fi
 
-echo "Building Tailscale ${VERSION}..."
+echo "Building Tailscale ${VERSION}-${PKG_RELEASE}..."
 mkdir -p packages
 
 # MIPS build (mips_24kc - GL.iNet E750/AR750S, etc.)
@@ -18,6 +19,7 @@ echo "=== Building mips_24kc package ==="
 docker build \
     --progress=plain \
     --build-arg TAILSCALE_VERSION=${VERSION} \
+    --build-arg PKG_RELEASE=${PKG_RELEASE} \
     --build-arg OPENWRT_ARCH=mips_24kc \
     -t tailscale-mips_24kc:v${VERSION} \
     -f Dockerfile \
@@ -48,6 +50,7 @@ echo "=== Building aarch64_cortex-a53 package ==="
 docker build \
     --progress=plain \
     --build-arg TAILSCALE_VERSION=${VERSION} \
+    --build-arg PKG_RELEASE=${PKG_RELEASE} \
     --build-arg OPENWRT_ARCH=aarch64_cortex-a53 \
     -t tailscale-aarch64_cortex-a53:v${VERSION} \
     -f Dockerfile \
@@ -80,7 +83,7 @@ cd ..
 # Summary
 echo ""
 echo "======================================="
-echo "Build complete for Tailscale ${VERSION}"
+echo "Build complete for Tailscale ${VERSION}-${PKG_RELEASE}"
 echo "======================================="
 echo "Packages built:"
 ls -lh packages/*.ipk

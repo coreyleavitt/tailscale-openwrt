@@ -6,15 +6,17 @@ on:
       tailscale_version:
         description: 'Tailscale version to build (e.g. 1.92.2)'
         required: true
-  push:
-    tags:
-      - 'v*'
+      pkg_release:
+        description: 'Package release number (default: 1)'
+        required: false
+        default: '1'
 
 jobs:
   build-mips:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
+      release: ${{ steps.version.outputs.release }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -22,17 +24,15 @@ jobs:
       - name: Set version
         id: version
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "version=${{ github.event.inputs.tailscale_version }}" >> $GITHUB_OUTPUT
-          else
-            echo "version=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
-          fi
+          echo "version=${{ github.event.inputs.tailscale_version }}" >> $GITHUB_OUTPUT
+          echo "release=${{ github.event.inputs.pkg_release }}" >> $GITHUB_OUTPUT
 
       - name: Build mips_24kc package
         run: |
           cd tailscale-package
           docker build \
             --build-arg TAILSCALE_VERSION=${{ steps.version.outputs.version }} \
+            --build-arg PKG_RELEASE=${{ steps.version.outputs.release }} \
             --build-arg OPENWRT_ARCH=mips_24kc \
             -t tailscale-mips_24kc:latest \
             -f Dockerfile .
@@ -61,17 +61,15 @@ jobs:
       - name: Set version
         id: version
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "version=${{ github.event.inputs.tailscale_version }}" >> $GITHUB_OUTPUT
-          else
-            echo "version=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
-          fi
+          echo "version=${{ github.event.inputs.tailscale_version }}" >> $GITHUB_OUTPUT
+          echo "release=${{ github.event.inputs.pkg_release }}" >> $GITHUB_OUTPUT
 
       - name: Build aarch64_cortex-a53 package
         run: |
           cd tailscale-package
           docker build \
             --build-arg TAILSCALE_VERSION=${{ steps.version.outputs.version }} \
+            --build-arg PKG_RELEASE=${{ steps.version.outputs.release }} \
             --build-arg OPENWRT_ARCH=aarch64_cortex-a53 \
             -t tailscale-aarch64:latest \
             -f Dockerfile .
@@ -92,7 +90,6 @@ jobs:
   release:
     needs: [build-mips, build-aarch64]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
     permissions:
       contents: write
       id-token: write
@@ -121,9 +118,11 @@ jobs:
         with:
           subject-path: packages/*.ipk
 
-      - name: Create Release
+      - name: Create or Update Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: v${{ needs.build-mips.outputs.version }}
+          name: v${{ needs.build-mips.outputs.version }}
           files: packages/*
-          generate_release_notes: true
+          generate_release_notes: ${{ needs.build-mips.outputs.release == '1' }}
           make_latest: "legacy"
