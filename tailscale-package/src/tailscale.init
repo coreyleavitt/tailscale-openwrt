@@ -21,6 +21,12 @@ start_service() {
     local extra_args
     config_get extra_args config extra_args ""
 
+    # Hardware-detected settings (from postinst)
+    local mem_limit gogc no_logs
+    config_get mem_limit hardware mem_limit ""
+    config_get gogc hardware gogc ""
+    config_get_bool no_logs hardware no_logs 0
+
     # Create directories with appropriate permissions
     mkdir -p /var/run/tailscale
     mkdir -p /var/lib/tailscale
@@ -32,6 +38,20 @@ start_service() {
     procd_append_param command --statedir /var/lib/tailscale
     procd_append_param command --socket /var/run/tailscale/tailscaled.sock
 
+    # Apply no_logs setting
+    if [ "$no_logs" -eq 1 ]; then
+        procd_append_param command --no-logs-no-support
+        procd_set_param stdout 0
+        procd_set_param stderr 0
+    else
+        procd_set_param stdout 1
+        procd_set_param stderr 1
+    fi
+
+    # Apply memory tuning
+    [ -n "$mem_limit" ] && procd_set_param env GOMEMLIMIT="$mem_limit"
+    [ -n "$gogc" ] && procd_set_param env GOGC="$gogc"
+
     [ -n "$log_level" ] && procd_append_param command --verbose="$log_level"
 
     # Handle extra_args safely (word splitting intentional for multiple args)
@@ -41,13 +61,8 @@ start_service() {
         done
     fi
 
-    # Memory limit for 128MB RAM device
-    procd_set_param env GOMEMLIMIT=75MiB
-
     procd_set_param respawn 3600 5 5
     procd_set_param file /etc/config/tailscale
-    procd_set_param stdout 1
-    procd_set_param stderr 1
     procd_close_instance
 }
 
@@ -63,7 +78,15 @@ service_stopped() {
 service_triggers() {
     procd_add_reload_trigger "tailscale"
 
-    # Reload when network interfaces change (important for mobile/LTE routers)
+    # Always watch wan
     procd_add_reload_interface_trigger "wan"
-    procd_add_reload_interface_trigger "wwan"
+
+    # Check if wwan interfaces should be watched
+    config_load tailscale
+    local has_wwan
+    config_get_bool has_wwan hardware has_wwan 0
+    if [ "$has_wwan" -eq 1 ]; then
+        procd_add_reload_interface_trigger "wwan"
+        procd_add_reload_interface_trigger "wwan0"
+    fi
 }

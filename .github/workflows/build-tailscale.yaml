@@ -11,7 +11,7 @@ on:
       - 'v*'
 
 jobs:
-  build-glinet:
+  build-mips:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
@@ -28,30 +28,29 @@ jobs:
             echo "version=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
           fi
 
-      - name: Build GL.iNet package (mips_24kc)
+      - name: Build mips_24kc package
         run: |
           cd tailscale-package
           docker build \
             --build-arg TAILSCALE_VERSION=${{ steps.version.outputs.version }} \
-            --build-arg PACKAGE_VARIANT=glinet-mips24kc \
             --build-arg OPENWRT_ARCH=mips_24kc \
-            -t tailscale-glinet:latest \
+            -t tailscale-mips_24kc:latest \
             -f Dockerfile .
 
       - name: Extract package
         run: |
           mkdir -p packages
-          docker run --rm tailscale-glinet:latest \
-            cat /tailscale-glinet-mips24kc_${{ steps.version.outputs.version }}.ipk \
-            > packages/tailscale-glinet-mips24kc_${{ steps.version.outputs.version }}.ipk
+          docker run --rm tailscale-mips_24kc:latest \
+            cat /tailscale_${{ steps.version.outputs.version }}_mips_24kc.ipk \
+            > packages/tailscale_${{ steps.version.outputs.version }}_mips_24kc.ipk
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: tailscale-glinet
+          name: tailscale-mips_24kc
           path: packages/*.ipk
 
-  build-cudy:
+  build-aarch64:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
@@ -68,31 +67,30 @@ jobs:
             echo "version=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
           fi
 
-      - name: Build Cudy package (aarch64)
+      - name: Build aarch64_cortex-a53 package
         run: |
           cd tailscale-package
           docker build \
             --build-arg TAILSCALE_VERSION=${{ steps.version.outputs.version }} \
-            --build-arg PACKAGE_VARIANT=cudy-aarch64 \
             --build-arg OPENWRT_ARCH=aarch64_cortex-a53 \
-            -t tailscale-cudy:latest \
+            -t tailscale-aarch64:latest \
             -f Dockerfile .
 
       - name: Extract package
         run: |
           mkdir -p packages
-          docker run --rm tailscale-cudy:latest \
-            cat /tailscale-cudy-aarch64_${{ steps.version.outputs.version }}.ipk \
-            > packages/tailscale-cudy-aarch64_${{ steps.version.outputs.version }}.ipk
+          docker run --rm tailscale-aarch64:latest \
+            cat /tailscale_${{ steps.version.outputs.version }}_aarch64_cortex-a53.ipk \
+            > packages/tailscale_${{ steps.version.outputs.version }}_aarch64_cortex-a53.ipk
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: tailscale-cudy
+          name: tailscale-aarch64_cortex-a53
           path: packages/*.ipk
 
   release:
-    needs: [build-glinet, build-cudy]
+    needs: [build-mips, build-aarch64]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
     permissions:

@@ -3,18 +3,15 @@
 #
 # Build arguments:
 #   TAILSCALE_VERSION - Tailscale version to build (e.g., 1.92.2)
-#   PACKAGE_VARIANT   - Package variant (glinet-mips24kc or cudy-aarch64)
 #   OPENWRT_ARCH      - OpenWrt architecture (mips_24kc or aarch64_cortex-a53)
 
 ARG TAILSCALE_VERSION=1.92.2
-ARG PACKAGE_VARIANT=glinet-mips24kc
 ARG OPENWRT_ARCH=mips_24kc
 ARG SKIP_UPX=0
 
 FROM registry.opensuse.org/opensuse/tumbleweed:latest
 
 ARG TAILSCALE_VERSION
-ARG PACKAGE_VARIANT
 ARG OPENWRT_ARCH
 ARG SKIP_UPX
 
@@ -91,63 +88,41 @@ RUN cp /build/tailscaled usr/sbin/ && \
     chmod 755 usr/sbin/tailscaled && \
     ln -s ../sbin/tailscaled usr/bin/tailscale
 
-# Copy init script, config, and killswitch based on variant
+# Copy unified init script, config, and killswitch
 COPY src/ /tmp/files/
-RUN VENDOR=$(echo ${PACKAGE_VARIANT} | cut -d'-' -f1) && \
-    echo "Building for vendor: $VENDOR" && \
-    cp /tmp/files/tailscale.init.$VENDOR etc/init.d/tailscale && \
-    cp /tmp/files/tailscale.config.$VENDOR etc/config/tailscale && \
+RUN cp /tmp/files/tailscale.init etc/init.d/tailscale && \
+    cp /tmp/files/tailscale.config etc/config/tailscale && \
     cp /tmp/files/tailscale-killswitch.sh usr/sbin/tailscale-killswitch
 
 RUN chmod 755 etc/init.d/tailscale && \
     chmod 644 etc/config/tailscale && \
     chmod 755 usr/sbin/tailscale-killswitch
 
-# Create control file with dependencies
-RUN VARIANT_NAME=$(echo ${PACKAGE_VARIANT} | cut -d'-' -f1) && \
-    DEPS="kmod-tun, ca-bundle" && \
-    if [ "$VARIANT_NAME" = "cudy" ]; then DEPS="${DEPS}, ip-full"; fi && \
-    cat > CONTROL/control <<EOF
-Package: tailscale-${PACKAGE_VARIANT}
+# Create control file
+RUN cat > CONTROL/control <<EOF
+Package: tailscale
 Version: ${TAILSCALE_VERSION}-1
 Architecture: ${OPENWRT_ARCH}
 Maintainer: Community Build
 Section: net
 Priority: optional
-Depends: ${DEPS}
+Depends: kmod-tun, ca-bundle, ip-full
 Description: Tailscale VPN client for OpenWrt
  Tailscale is a WireGuard-based mesh VPN that makes it easy to connect
- your devices. This is a community build optimized for ${VARIANT_NAME}
- devices on ${OPENWRT_ARCH} architecture.
+ your devices. Auto-detects hardware and optimizes for available RAM.
  .
  Features:
   - Exit node support with killswitch
   - DNS leak prevention
-  - Memory optimized for embedded devices
+  - Auto-tuned for device memory
 EOF
 
 # Create conffiles list (preserve user config on upgrade)
 RUN echo "/etc/config/tailscale" > CONTROL/conffiles
 
-# Create postinst script
-RUN cat > CONTROL/postinst <<'POSTINST'
-#!/bin/sh
-# Create state directory with secure permissions
-mkdir -p /var/lib/tailscale
-chmod 700 /var/lib/tailscale
-
-# Create runtime directory
-mkdir -p /var/run/tailscale
-chmod 755 /var/run/tailscale
-
-# Check for tun module
-if ! lsmod | grep -q "^tun "; then
-    echo "Note: tun module not loaded. It will be loaded when tailscale starts."
-fi
-
-exit 0
-POSTINST
-RUN chmod 755 CONTROL/postinst
+# Copy postinst script (handles hardware detection)
+RUN cp /tmp/files/tailscale.postinst CONTROL/postinst && \
+    chmod 755 CONTROL/postinst
 
 # Create prerm script
 RUN cat > CONTROL/prerm <<'PRERM'
@@ -184,8 +159,8 @@ RUN echo "=== Package contents ===" && \
 
 # Build the IPK
 RUN opkg-build /ipk /tmp && \
-    mv /tmp/tailscale-${PACKAGE_VARIANT}_${TAILSCALE_VERSION}-1_${OPENWRT_ARCH}.ipk \
-       /tailscale-${PACKAGE_VARIANT}_${TAILSCALE_VERSION}.ipk
+    mv /tmp/tailscale_${TAILSCALE_VERSION}-1_${OPENWRT_ARCH}.ipk \
+       /tailscale_${TAILSCALE_VERSION}_${OPENWRT_ARCH}.ipk
 
 # Final output location
-# Extract with: docker run --rm <image> cat /tailscale-*.ipk > package.ipk
+# Extract with: docker run --rm <image> cat /tailscale_*.ipk > package.ipk
