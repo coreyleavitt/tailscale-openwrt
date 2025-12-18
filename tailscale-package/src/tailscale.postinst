@@ -14,8 +14,7 @@ chmod 755 /var/run/tailscale
 if ! uci -q get network.tailscale >/dev/null; then
     logger -t tailscale "postinst: Creating tailscale network interface"
     uci set network.tailscale=interface
-    uci set network.tailscale.proto='none'
-    uci set network.tailscale.device='tailscale0'
+    uci set network.tailscale.proto='tailscale'
     uci commit network
 fi
 

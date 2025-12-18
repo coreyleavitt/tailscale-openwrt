@@ -83,6 +83,7 @@ RUN mkdir -p usr/sbin \
     usr/bin \
     etc/init.d \
     etc/config \
+    lib/netifd/proto \
     CONTROL
 
 # Copy binary
@@ -96,14 +97,16 @@ RUN cp /tmp/files/tailscale.init etc/init.d/tailscale && \
     cp /tmp/files/tailscale-wrapper.sh usr/bin/tailscale && \
     cp /tmp/files/tailscale-killswitch.sh usr/sbin/tailscale-killswitch && \
     cp /tmp/files/tailscale-exitnode.sh usr/sbin/tailscale-exitnode && \
-    cp /tmp/files/tailscale-setup.sh usr/sbin/tailscale-setup
+    cp /tmp/files/tailscale-setup.sh usr/sbin/tailscale-setup && \
+    cp /tmp/files/tailscale.proto.sh lib/netifd/proto/tailscale.sh
 
 RUN chmod 755 etc/init.d/tailscale && \
     chmod 644 etc/config/tailscale && \
     chmod 755 usr/bin/tailscale && \
     chmod 755 usr/sbin/tailscale-killswitch && \
     chmod 755 usr/sbin/tailscale-exitnode && \
-    chmod 755 usr/sbin/tailscale-setup
+    chmod 755 usr/sbin/tailscale-setup && \
+    chmod 755 lib/netifd/proto/tailscale.sh
 
 # Create control file
 RUN cat > CONTROL/control <<EOF
