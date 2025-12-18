@@ -63,10 +63,12 @@ RUN GOARCH=$(echo ${OPENWRT_ARCH} | grep -q aarch64 && echo arm64 || (echo ${OPE
 RUN echo "Original binary size:" && ls -lh /build/tailscaled
 
 # Compress binary with UPX (skip with --build-arg SKIP_UPX=1 for faster testing)
+# Using --best --lzma instead of --ultra-brute for much faster builds.
+# Testing showed ultra-brute selects LZMA method 14 level 10 for both archs.
+# Results: MIPS identical, ARM64 is 38KB larger (0.5%) - acceptable trade-off.
 RUN if [ "$SKIP_UPX" = "1" ]; then \
         echo "UPX compression skipped (SKIP_UPX=1)"; \
     else \
-        upx --ultra-brute /build/tailscaled 2>/dev/null || \
         upx --best --lzma /build/tailscaled 2>/dev/null || \
         upx --best /build/tailscaled 2>/dev/null || \
         echo "UPX compression failed, continuing without"; \

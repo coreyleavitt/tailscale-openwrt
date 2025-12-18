@@ -24,3 +24,4 @@ Thumbs.db
 # Temporary files
 *.tmp
 *.log
+gh-artifacts/
