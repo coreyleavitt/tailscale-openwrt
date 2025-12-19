@@ -10,7 +10,7 @@ EXITNODE="/usr/sbin/tailscale-exitnode"
 
 # Show help with our extensions appended
 show_help() {
-    "$TAILSCALED" --help 2>&1
+    (exec -a tailscale "$TAILSCALED" --help 2>&1)
     cat <<'EOF'
 
 OpenWrt Extensions:
@@ -84,9 +84,9 @@ case "$1" in
         elif check_advertise_exitnode_false "$@"; then
             disable_exitnode_firewall
         fi
-        exec "$TAILSCALED" "$@"
+        exec -a tailscale "$TAILSCALED" "$@"
         ;;
     *)
-        exec "$TAILSCALED" "$@"
+        exec -a tailscale "$TAILSCALED" "$@"
         ;;
 esac
