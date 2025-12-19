@@ -11,10 +11,13 @@ chmod 755 /var/run/tailscale
 
 # --- Network Interface Setup ---
 # Create tailscale interface if it doesn't exist (using named section for easy cleanup)
+# Uses proto='none' so netifd observes but doesn't manage the interface.
+# This prevents interference with Tailscale's routing table management.
 if ! uci -q get network.tailscale >/dev/null; then
     logger -t tailscale "postinst: Creating tailscale network interface"
     uci set network.tailscale=interface
-    uci set network.tailscale.proto='tailscale'
+    uci set network.tailscale.proto='none'
+    uci set network.tailscale.device='tailscale0'
     uci commit network
 fi
 

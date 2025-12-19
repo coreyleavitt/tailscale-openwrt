@@ -86,7 +86,6 @@ RUN mkdir -p usr/sbin \
     usr/bin \
     etc/init.d \
     etc/config \
-    lib/netifd/proto \
     www/luci-static/resources/protocol \
     CONTROL
 
@@ -95,6 +94,8 @@ RUN cp /build/tailscaled usr/sbin/ && \
     chmod 755 usr/sbin/tailscaled
 
 # Copy scripts from src/
+# Note: netifd protocol handler intentionally NOT included - it interferes with
+# Tailscale's routing table management. We use proto='none' instead.
 COPY src/ /tmp/files/
 RUN cp /tmp/files/tailscale.init etc/init.d/tailscale && \
     cp /tmp/files/tailscale.config etc/config/tailscale && \
@@ -102,7 +103,6 @@ RUN cp /tmp/files/tailscale.init etc/init.d/tailscale && \
     cp /tmp/files/tailscale-killswitch.sh usr/sbin/tailscale-killswitch && \
     cp /tmp/files/tailscale-exitnode.sh usr/sbin/tailscale-exitnode && \
     cp /tmp/files/tailscale-setup.sh usr/sbin/tailscale-setup && \
-    cp /tmp/files/tailscale.proto.sh lib/netifd/proto/tailscale.sh && \
     cp /tmp/files/luci-protocol-tailscale.js www/luci-static/resources/protocol/tailscale.js
 
 RUN chmod 755 etc/init.d/tailscale && \
@@ -111,7 +111,6 @@ RUN chmod 755 etc/init.d/tailscale && \
     chmod 755 usr/sbin/tailscale-killswitch && \
     chmod 755 usr/sbin/tailscale-exitnode && \
     chmod 755 usr/sbin/tailscale-setup && \
-    chmod 755 lib/netifd/proto/tailscale.sh && \
     chmod 644 www/luci-static/resources/protocol/tailscale.js
 
 # Create control file
