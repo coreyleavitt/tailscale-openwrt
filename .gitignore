@@ -25,3 +25,4 @@ Thumbs.db
 *.tmp
 *.log
 gh-artifacts/
+CODE_REVIEW.md

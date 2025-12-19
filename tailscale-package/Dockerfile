@@ -101,14 +101,16 @@ RUN cp /tmp/files/tailscale.init etc/init.d/tailscale && \
     cp /tmp/files/tailscale.config etc/config/tailscale && \
     cp /tmp/files/tailscale-wrapper.sh usr/bin/tailscale && \
     cp /tmp/files/tailscale-killswitch.sh usr/sbin/tailscale-killswitch && \
+    cp /tmp/files/tailscale-killswitch-boot.sh usr/sbin/tailscale-killswitch-boot && \
     cp /tmp/files/tailscale-exitnode.sh usr/sbin/tailscale-exitnode && \
     cp /tmp/files/tailscale-setup.sh usr/sbin/tailscale-setup && \
     cp /tmp/files/luci-protocol-tailscale.js www/luci-static/resources/protocol/tailscale.js
 
 RUN chmod 755 etc/init.d/tailscale && \
-    chmod 644 etc/config/tailscale && \
+    chmod 600 etc/config/tailscale && \
     chmod 755 usr/bin/tailscale && \
     chmod 755 usr/sbin/tailscale-killswitch && \
+    chmod 755 usr/sbin/tailscale-killswitch-boot && \
     chmod 755 usr/sbin/tailscale-exitnode && \
     chmod 755 usr/sbin/tailscale-setup && \
     chmod 644 www/luci-static/resources/protocol/tailscale.js
@@ -121,7 +123,7 @@ Architecture: ${OPENWRT_ARCH}
 Maintainer: Community Build
 Section: net
 Priority: optional
-Depends: kmod-tun, ca-bundle, ip-full
+Depends: kmod-tun, ca-bundle, ip-full, conntrack
 Description: Tailscale VPN client for OpenWrt
  Tailscale is a WireGuard-based mesh VPN that makes it easy to connect
  your devices. Auto-detects hardware and optimizes for available RAM.

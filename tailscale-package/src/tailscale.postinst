@@ -55,33 +55,56 @@ if ! uci -q get firewall.tailscale_zone >/dev/null; then
     uci commit firewall
 fi
 
+# --- Firewall Include for Killswitch ---
+# Register killswitch boot script to run at firewall startup (before network)
+# This ensures killswitch rules are in place from the first packet
+if ! uci -q get firewall.tailscale_killswitch >/dev/null; then
+    logger -t tailscale "postinst: Adding killswitch firewall include"
+    uci set firewall.tailscale_killswitch=include
+    uci set firewall.tailscale_killswitch.type='script'
+    uci set firewall.tailscale_killswitch.path='/usr/sbin/tailscale-killswitch-boot'
+    uci set firewall.tailscale_killswitch.fw4_compatible='1'
+    uci commit firewall
+fi
+
 # Reload network and firewall to apply changes
 /etc/init.d/network reload 2>/dev/null || true
 /etc/init.d/firewall reload 2>/dev/null || true
 
 # --- Hardware Detection ---
-# Detect total RAM in MB
-total_ram=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo)
+# Only auto-detect on first install, preserve user customizations on upgrade
+existing_mem_limit=$(uci -q get tailscale.hardware.mem_limit)
+existing_gogc=$(uci -q get tailscale.hardware.gogc)
 
-# Configure based on available RAM
-if [ "$total_ram" -lt 96 ]; then
-    # Very low memory (<96MB): aggressive optimization
-    uci set tailscale.hardware.mem_limit='50MiB'
-    uci set tailscale.hardware.gogc='50'
-    uci set tailscale.hardware.no_logs='1'
-elif [ "$total_ram" -lt 192 ]; then
-    # Low memory (96-192MB): moderate optimization
-    uci set tailscale.hardware.mem_limit='75MiB'
-    uci set tailscale.hardware.gogc=''
-    uci set tailscale.hardware.no_logs='0'
+# Skip hardware detection if user has customized settings
+if [ -n "$existing_mem_limit" ] || [ -n "$existing_gogc" ]; then
+    logger -t tailscale "postinst: Preserving existing hardware settings (mem_limit=$existing_mem_limit, gogc=$existing_gogc)"
 else
-    # Normal memory (>192MB): no restrictions
-    uci set tailscale.hardware.mem_limit=''
-    uci set tailscale.hardware.gogc=''
-    uci set tailscale.hardware.no_logs='0'
+    # Detect total RAM in MB
+    total_ram=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo)
+
+    # Configure based on available RAM
+    if [ "$total_ram" -lt 96 ]; then
+        # Very low memory (<96MB): aggressive optimization
+        uci set tailscale.hardware.mem_limit='50MiB'
+        uci set tailscale.hardware.gogc='50'
+        uci set tailscale.hardware.no_logs='1'
+    elif [ "$total_ram" -lt 192 ]; then
+        # Low memory (96-192MB): moderate optimization
+        uci set tailscale.hardware.mem_limit='75MiB'
+        uci set tailscale.hardware.gogc=''
+        uci set tailscale.hardware.no_logs='0'
+    else
+        # Normal memory (>192MB): no restrictions
+        uci set tailscale.hardware.mem_limit=''
+        uci set tailscale.hardware.gogc=''
+        uci set tailscale.hardware.no_logs='0'
+    fi
+
+    logger -t tailscale "postinst: ${total_ram}MB RAM detected, auto-configured hardware settings"
 fi
 
-# Detect mobile/LTE interfaces
+# Detect mobile/LTE interfaces (always update, not user-configurable)
 if ls /sys/class/net/ | grep -qE '^(wwan|usb|lte)'; then
     uci set tailscale.hardware.has_wwan='1'
 else
@@ -90,9 +113,8 @@ fi
 
 uci commit tailscale
 
-# Log detected configuration
-logger -t tailscale "postinst: ${total_ram}MB RAM detected"
-logger -t tailscale "postinst: mem_limit=$(uci -q get tailscale.hardware.mem_limit), gogc=$(uci -q get tailscale.hardware.gogc), no_logs=$(uci get tailscale.hardware.no_logs), has_wwan=$(uci get tailscale.hardware.has_wwan)"
+# Log final configuration
+logger -t tailscale "postinst: mem_limit=$(uci -q get tailscale.hardware.mem_limit), gogc=$(uci -q get tailscale.hardware.gogc), no_logs=$(uci -q get tailscale.hardware.no_logs), has_wwan=$(uci -q get tailscale.hardware.has_wwan)"
 
 # --- Service Restart on Upgrade ---
 # If service was enabled, restart it (prerm stopped it during upgrade)

@@ -4,7 +4,7 @@
 # Manages firewall rules and exit node advertising
 #
 
-TAILSCALED="/usr/sbin/tailscaled"
+TAILSCALE="/usr/bin/tailscale"
 
 usage() {
     cat <<'EOF'
@@ -36,7 +36,7 @@ enable_exitnode() {
 
     # Advertise as exit node
     echo "  Advertising as exit node..."
-    "$TAILSCALED" set --advertise-exit-node=true
+    "$TAILSCALE" set --advertise-exit-node=true
 
     echo ""
     echo "Exit node enabled. Approve it in the Tailscale admin console:"
@@ -48,7 +48,7 @@ disable_exitnode() {
 
     # Stop advertising
     echo "  Stopping exit node advertisement..."
-    "$TAILSCALED" set --advertise-exit-node=false
+    "$TAILSCALE" set --advertise-exit-node=false
 
     # Disable firewall rule
     if [ "$(uci -q get firewall.ts_wan_forward.enabled)" = "1" ]; then
@@ -79,10 +79,10 @@ show_status() {
     # Check Tailscale status for exit node info
     echo ""
     echo "Tailscale status:"
-    "$TAILSCALED" status 2>/dev/null | head -5
+    "$TAILSCALE" status 2>/dev/null | head -5
 
     # Check if we're advertising
-    prefs=$("$TAILSCALED" debug prefs 2>/dev/null)
+    prefs=$("$TAILSCALE" debug prefs 2>/dev/null)
     if echo "$prefs" | grep -q '"AdvertiseRoutes".*"0.0.0.0/0"'; then
         echo ""
         echo "Advertising:    yes (offering as exit node)"

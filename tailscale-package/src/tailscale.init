@@ -67,15 +67,16 @@ start_service() {
 
     # Poke netifd to notice the tailscale0 device after it's created
     # This ensures LuCI shows interface stats even with proto='none'
-    ( sleep 3 && ifup tailscale 2>/dev/null ) &
+    (
+        sleep 3
+        if ! ifup tailscale 2>/dev/null; then
+            logger -t tailscale "Warning: ifup tailscale failed (interface may not be ready)"
+        fi
+    ) &
 
-    # Apply killswitch rules if enabled (runs in background after service starts)
-    local killswitch
-    config_get_bool killswitch config killswitch 0
-    if [ "$killswitch" -eq 1 ]; then
-        # Delay slightly to ensure tailscaled is starting
-        ( sleep 2 && /usr/sbin/tailscale-killswitch apply-rules ) &
-    fi
+    # Note: Killswitch rules are applied at firewall startup via
+    # /usr/sbin/tailscale-killswitch-boot (firewall include), not here.
+    # This ensures rules are in place before network comes up.
 
     # Auto-authenticate with authkey on first start
     local authkey
@@ -90,15 +91,24 @@ start_service() {
                 fi
                 sleep 1
             done
-            # Authenticate with the provided key
+
+            # Write authkey to temp file to avoid exposing it in ps output
+            # Using $$ for unique filename (subshell PID)
+            authkey_file="/tmp/.tailscale_authkey.$$"
+            (umask 077 && echo "$authkey" > "$authkey_file")
+
+            # Authenticate with the provided key (file: prefix reads from file)
             logger -t tailscale "Auto-authenticating with authkey"
-            if /usr/bin/tailscale up --authkey="$authkey" --ssh; then
+            if /usr/bin/tailscale up --authkey="file:$authkey_file" --ssh; then
                 logger -t tailscale "Authentication successful, clearing authkey from config"
                 uci delete tailscale.config.authkey
                 uci commit tailscale
             else
                 logger -t tailscale "Authentication failed"
             fi
+
+            # Clean up authkey file
+            rm -f "$authkey_file"
         ) &
     fi
 }

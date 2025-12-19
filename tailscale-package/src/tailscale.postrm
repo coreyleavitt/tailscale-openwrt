@@ -11,6 +11,9 @@ uci -q delete firewall.lan_to_wan_block
 uci -q delete firewall.block_wan_dns
 uci -q delete firewall.allow_ts_dns
 
+# Remove killswitch firewall include
+uci -q delete firewall.tailscale_killswitch
+
 # Remove tailscale zone and forwarding rules
 uci -q delete firewall.tailscale_zone
 uci -q delete firewall.lan_ts_forward

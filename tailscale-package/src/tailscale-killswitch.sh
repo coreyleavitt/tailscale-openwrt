@@ -15,6 +15,7 @@ LAN_ZONE_NAME="lan"
 WAN_ZONE_NAME="wan"
 DNS_BACKUP_FILE="/etc/tailscale/dns_backup"
 MAGIC_DNS="100.100.100.100"
+MAGIC_DNS_V6="fd7a:115c:a1e0::53"
 
 # --- Functions ---
 
@@ -114,9 +115,10 @@ configure_router_dns() {
     # Backup current DNS servers
     uci -q get dhcp.@dnsmasq[0].server > "$DNS_BACKUP_FILE" 2>/dev/null || true
 
-    # Point dnsmasq to Tailscale MagicDNS
+    # Point dnsmasq to Tailscale MagicDNS (both IPv4 and IPv6)
     uci -q delete dhcp.@dnsmasq[0].server
     uci add_list dhcp.@dnsmasq[0].server="$MAGIC_DNS"
+    uci add_list dhcp.@dnsmasq[0].server="$MAGIC_DNS_V6"
     uci set dhcp.@dnsmasq[0].noresolv='1'
     uci commit dhcp
 }
@@ -162,6 +164,19 @@ enable_killswitch() {
 
     # Reload services
     reload_services
+
+    # Flush existing direct-to-WAN connections (not Tailscale-routed)
+    # This prevents stateful connection leaks from before killswitch was enabled
+    wan_iface=$(ip route | grep default | awk '{print $5}')
+    if [ -n "$wan_iface" ]; then
+        echo "Flushing existing direct-WAN connections..."
+        # IPv4
+        wan_ip=$(ip -4 addr show "$wan_iface" 2>/dev/null | awk '/inet / {print $2}' | cut -d/ -f1)
+        [ -n "$wan_ip" ] && conntrack -D --reply-dst "$wan_ip" 2>/dev/null || true
+        # IPv6 (exclude link-local fe80::)
+        wan_ip6=$(ip -6 addr show "$wan_iface" 2>/dev/null | awk '/inet6 / && !/fe80/ {print $2}' | cut -d/ -f1 | head -1)
+        [ -n "$wan_ip6" ] && conntrack -D --reply-dst "$wan_ip6" 2>/dev/null || true
+    fi
 
     echo ""
     echo "Killswitch enabled successfully."
@@ -214,6 +229,7 @@ apply_rules() {
         fi
         uci -q delete dhcp.@dnsmasq[0].server
         uci add_list dhcp.@dnsmasq[0].server="$MAGIC_DNS"
+        uci add_list dhcp.@dnsmasq[0].server="$MAGIC_DNS_V6"
         uci set dhcp.@dnsmasq[0].noresolv='1'
         uci commit dhcp
         uci commit firewall
@@ -238,7 +254,8 @@ check_status() {
             get_openwrt_version
             if [ "${OPENWRT_MAJOR_VERSION}" -ge "23" ]; then
                 if command -v nft >/dev/null 2>&1; then
-                    if nft list ruleset 2>/dev/null | grep -q "Block LAN to WAN"; then
+                    # Look for our specific rule comment containing "(Killswitch)"
+                    if nft list ruleset 2>/dev/null | grep -qF "(Killswitch)"; then
                         echo "Firewall rules: ACTIVE"
                     else
                         echo "WARNING: Rules configured but may not be loaded. Try: /etc/init.d/firewall reload"
@@ -246,7 +263,8 @@ check_status() {
                 fi
             else
                 if command -v iptables >/dev/null 2>&1; then
-                    if iptables -L FORWARD -n 2>/dev/null | grep -q "REJECT"; then
+                    # Look for our specific rule comment containing "Killswitch"
+                    if iptables -L FORWARD -nv 2>/dev/null | grep -qF "Killswitch"; then
                         echo "Firewall rules: ACTIVE"
                     else
                         echo "WARNING: Rules configured but may not be loaded. Try: /etc/init.d/firewall reload"
@@ -260,8 +278,8 @@ check_status() {
         # Check DNS configuration
         local dns_server
         dns_server=$(uci -q get dhcp.@dnsmasq[0].server)
-        if echo "$dns_server" | grep -q "$MAGIC_DNS"; then
-            echo "Router DNS: MagicDNS ($MAGIC_DNS)"
+        if echo "$dns_server" | grep -qF "$MAGIC_DNS"; then
+            echo "Router DNS: MagicDNS ($MAGIC_DNS, $MAGIC_DNS_V6)"
         else
             echo "WARNING: Router DNS not pointing to MagicDNS"
         fi
@@ -350,8 +368,8 @@ case "$1" in
         echo "  status   - Check if killswitch is enabled"
         echo ""
         echo "When enabled, this script:"
-        echo "  - Blocks all LAN to WAN traffic"
-        echo "  - Redirects router DNS to Tailscale MagicDNS (100.100.100.100)"
+        echo "  - Blocks all LAN to WAN traffic (IPv4 and IPv6)"
+        echo "  - Redirects router DNS to Tailscale MagicDNS"
         echo "  - Prevents DNS leaks from both LAN clients and the router"
         echo "  - If Tailscale/exit node fails, NO traffic leaks to WAN"
         echo ""
