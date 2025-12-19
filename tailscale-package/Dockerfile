@@ -87,6 +87,7 @@ RUN mkdir -p usr/sbin \
     etc/init.d \
     etc/config \
     lib/netifd/proto \
+    www/luci-static/resources/protocol \
     CONTROL
 
 # Copy binary
@@ -101,7 +102,8 @@ RUN cp /tmp/files/tailscale.init etc/init.d/tailscale && \
     cp /tmp/files/tailscale-killswitch.sh usr/sbin/tailscale-killswitch && \
     cp /tmp/files/tailscale-exitnode.sh usr/sbin/tailscale-exitnode && \
     cp /tmp/files/tailscale-setup.sh usr/sbin/tailscale-setup && \
-    cp /tmp/files/tailscale.proto.sh lib/netifd/proto/tailscale.sh
+    cp /tmp/files/tailscale.proto.sh lib/netifd/proto/tailscale.sh && \
+    cp /tmp/files/luci-protocol-tailscale.js www/luci-static/resources/protocol/tailscale.js
 
 RUN chmod 755 etc/init.d/tailscale && \
     chmod 644 etc/config/tailscale && \
@@ -109,7 +111,8 @@ RUN chmod 755 etc/init.d/tailscale && \
     chmod 755 usr/sbin/tailscale-killswitch && \
     chmod 755 usr/sbin/tailscale-exitnode && \
     chmod 755 usr/sbin/tailscale-setup && \
-    chmod 755 lib/netifd/proto/tailscale.sh
+    chmod 755 lib/netifd/proto/tailscale.sh && \
+    chmod 644 www/luci-static/resources/protocol/tailscale.js
 
 # Create control file
 RUN cat > CONTROL/control <<EOF
