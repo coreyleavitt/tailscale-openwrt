@@ -117,9 +117,10 @@ uci commit tailscale
 logger -t tailscale "postinst: mem_limit=$(uci -q get tailscale.hardware.mem_limit), gogc=$(uci -q get tailscale.hardware.gogc), no_logs=$(uci -q get tailscale.hardware.no_logs), has_wwan=$(uci -q get tailscale.hardware.has_wwan)"
 
 # --- Service Restart on Upgrade ---
-# If service was enabled, restart it (prerm stopped it during upgrade)
+# If service was enabled, ensure init symlinks exist and restart
 if [ "$(uci -q get tailscale.config.enabled)" = "1" ]; then
-    logger -t tailscale "postinst: Service enabled, restarting"
+    logger -t tailscale "postinst: Service enabled, ensuring init symlinks and restarting"
+    /etc/init.d/tailscale enable 2>/dev/null || true
     /etc/init.d/tailscale start 2>/dev/null || true
 fi
 
