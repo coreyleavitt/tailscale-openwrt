@@ -45,12 +45,11 @@ proto_tailscale_setup() {
     fi
 
     # Report the interface to netifd
+    # Note: We intentionally do NOT add routes here - Tailscale manages all
+    # routing including the CGNAT range (100.64.0.0/10) and exit node routes.
+    # Adding routes here interferes with Tailscale's routing table management.
     proto_init_update "$ifname" 1
     proto_add_ipv4_address "$ipaddr" 32
-
-    # Add Tailscale's CGNAT range as a route
-    proto_add_ipv4_route "100.64.0.0" 10
-
     proto_send_update "$interface"
 }
 
