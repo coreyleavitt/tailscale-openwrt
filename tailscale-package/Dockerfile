@@ -135,71 +135,11 @@ EOF
 # Create conffiles list (preserve user config on upgrade)
 RUN echo "/etc/config/tailscale" > CONTROL/conffiles
 
-# Copy postinst script (handles hardware detection)
+# Copy package control scripts
 RUN cp /tmp/files/tailscale.postinst CONTROL/postinst && \
-    chmod 755 CONTROL/postinst
-
-# Create prerm script
-RUN cat > CONTROL/prerm <<'PRERM'
-#!/bin/sh
-# Stop service before removal
-if [ -x /etc/init.d/tailscale ]; then
-    /etc/init.d/tailscale stop 2>/dev/null || true
-    /etc/init.d/tailscale disable 2>/dev/null || true
-fi
-
-exit 0
-PRERM
-RUN chmod 755 CONTROL/prerm
-
-# Create postrm script
-RUN cat > CONTROL/postrm <<'POSTRM'
-#!/bin/sh
-# Clean up all Tailscale configuration on removal
-
-# Remove killswitch blocking rules
-uci -q delete firewall.lan_to_wan_block
-uci -q delete firewall.block_wan_dns
-uci -q delete firewall.allow_ts_dns
-
-# Remove tailscale zone and forwarding rules
-uci -q delete firewall.tailscale_zone
-uci -q delete firewall.lan_ts_forward
-uci -q delete firewall.ts_lan_forward
-uci -q delete firewall.ts_wan_forward
-
-# Remove network interface
-uci -q delete network.tailscale
-
-# Restore DNS config if killswitch was enabled
-DNS_BACKUP="/etc/tailscale/dns_backup"
-if [ -f "$DNS_BACKUP" ]; then
-    uci -q delete dhcp.@dnsmasq[0].server
-    while IFS= read -r server || [ -n "$server" ]; do
-        [ -n "$server" ] && uci add_list dhcp.@dnsmasq[0].server="$server"
-    done < "$DNS_BACKUP"
-    uci -q delete dhcp.@dnsmasq[0].noresolv
-    rm -f "$DNS_BACKUP"
-    uci commit dhcp
-    /etc/init.d/dnsmasq restart 2>/dev/null || true
-fi
-
-# Commit and reload network/firewall
-uci commit firewall 2>/dev/null || true
-uci commit network 2>/dev/null || true
-/etc/init.d/firewall reload 2>/dev/null || true
-/etc/init.d/network reload 2>/dev/null || true
-
-# Clean up runtime files
-rm -rf /var/run/tailscale
-
-# Note: /etc/tailscale is preserved for reinstallation
-# Users can manually remove it if desired:
-#   rm -rf /etc/tailscale
-
-exit 0
-POSTRM
-RUN chmod 755 CONTROL/postrm
+    cp /tmp/files/tailscale.prerm CONTROL/prerm && \
+    cp /tmp/files/tailscale.postrm CONTROL/postrm && \
+    chmod 755 CONTROL/postinst CONTROL/prerm CONTROL/postrm
 
 # Debug: Show directory structure
 RUN echo "=== Package contents ===" && \

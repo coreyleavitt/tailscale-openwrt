@@ -1,0 +1,11 @@
+#!/bin/sh
+# Tailscale prerm - stop service before upgrade/removal
+# Note: We only stop the service, NOT disable it. This preserves the
+# enable state across upgrades. The symlinks are cleaned up in postrm
+# for full removal only.
+
+if [ -x /etc/init.d/tailscale ]; then
+    /etc/init.d/tailscale stop 2>/dev/null || true
+fi
+
+exit 0

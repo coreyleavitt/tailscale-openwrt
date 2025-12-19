@@ -94,4 +94,11 @@ uci commit tailscale
 logger -t tailscale "postinst: ${total_ram}MB RAM detected"
 logger -t tailscale "postinst: mem_limit=$(uci -q get tailscale.hardware.mem_limit), gogc=$(uci -q get tailscale.hardware.gogc), no_logs=$(uci get tailscale.hardware.no_logs), has_wwan=$(uci get tailscale.hardware.has_wwan)"
 
+# --- Service Restart on Upgrade ---
+# If service was enabled, restart it (prerm stopped it during upgrade)
+if [ "$(uci -q get tailscale.config.enabled)" = "1" ]; then
+    logger -t tailscale "postinst: Service enabled, restarting"
+    /etc/init.d/tailscale start 2>/dev/null || true
+fi
+
 exit 0
