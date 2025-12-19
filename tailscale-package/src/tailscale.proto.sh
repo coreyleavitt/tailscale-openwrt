@@ -7,6 +7,8 @@
 . /lib/functions.sh
 . ../netifd-proto.sh
 
+init_proto "$@"
+
 proto_tailscale_init_config() {
     # No device binding - tailscale0 is created by tailscaled
     no_device=1
@@ -58,4 +60,3 @@ proto_tailscale_teardown() {
 }
 
 add_protocol tailscale
-[ -n "$INCLUDE_ONLY" ] || init_proto "$@"
