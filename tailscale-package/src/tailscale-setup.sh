@@ -10,7 +10,7 @@ echo "========================================"
 echo ""
 
 # Check if already configured
-if [ -f /var/lib/tailscale/tailscaled.state ]; then
+if [ -f /etc/tailscale/tailscaled.state ]; then
     echo "Tailscale appears to be already configured."
     echo ""
     tailscale status 2>/dev/null && {

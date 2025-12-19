@@ -1,9 +1,9 @@
 #!/bin/sh
 # Tailscale postinst - configure network, firewall, and hardware optimizations
 
-# Create state directory with secure permissions
-mkdir -p /var/lib/tailscale
-chmod 700 /var/lib/tailscale
+# Create state directory with secure permissions (in /etc for persistence across reboots)
+mkdir -p /etc/tailscale
+chmod 700 /etc/tailscale
 
 # Create runtime directory
 mkdir -p /var/run/tailscale

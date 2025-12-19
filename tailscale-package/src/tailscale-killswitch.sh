@@ -13,7 +13,7 @@ TAILSCALE_INTERFACE="tailscale0"
 TAILSCALE_ZONE_NAME="tailscale"
 LAN_ZONE_NAME="lan"
 WAN_ZONE_NAME="wan"
-DNS_BACKUP_FILE="/var/lib/tailscale/dns_backup"
+DNS_BACKUP_FILE="/etc/tailscale/dns_backup"
 MAGIC_DNS="100.100.100.100"
 
 # --- Functions ---

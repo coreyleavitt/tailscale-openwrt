@@ -387,12 +387,12 @@ This automatically:
 - Removes all firewall rules and zones
 - Removes the network interface
 - Restores original DNS configuration (if killswitch was enabled)
-- Preserves `/var/lib/tailscale` for reinstallation
+- Preserves `/etc/tailscale` for reinstallation
 
 To completely remove all state:
 ```bash
 opkg remove tailscale
-rm -rf /var/lib/tailscale
+rm -rf /etc/tailscale
 ```
 
 ## Important Notes

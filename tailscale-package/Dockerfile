@@ -170,7 +170,7 @@ uci -q delete firewall.ts_wan_forward
 uci -q delete network.tailscale
 
 # Restore DNS config if killswitch was enabled
-DNS_BACKUP="/var/lib/tailscale/dns_backup"
+DNS_BACKUP="/etc/tailscale/dns_backup"
 if [ -f "$DNS_BACKUP" ]; then
     uci -q delete dhcp.@dnsmasq[0].server
     while IFS= read -r server || [ -n "$server" ]; do
@@ -191,9 +191,9 @@ uci commit network 2>/dev/null || true
 # Clean up runtime files
 rm -rf /var/run/tailscale
 
-# Note: /var/lib/tailscale is preserved for reinstallation
+# Note: /etc/tailscale is preserved for reinstallation
 # Users can manually remove it if desired:
-#   rm -rf /var/lib/tailscale
+#   rm -rf /etc/tailscale
 
 exit 0
 POSTRM
