@@ -4,13 +4,16 @@
 # Guides new users through initial setup
 #
 
+# Centralized path configuration
+TAILSCALE_STATEDIR="/etc/tailscale"
+
 echo "========================================"
 echo "  Tailscale Setup Helper for OpenWrt"
 echo "========================================"
 echo ""
 
 # Check if already configured
-if [ -f /etc/tailscale/tailscaled.state ]; then
+if [ -f "${TAILSCALE_STATEDIR}/tailscaled.state" ]; then
     echo "Tailscale appears to be already configured."
     echo ""
     tailscale status 2>/dev/null && {

@@ -2,6 +2,10 @@
 # Tailscale postrm - clean up after package removal
 # Note: This only runs on full removal, not during upgrades
 
+# Centralized path configuration
+TAILSCALE_RUNDIR="/var/run/tailscale"
+TAILSCALE_STATEDIR="/etc/tailscale"
+
 # Remove init.d symlinks
 rm -f /etc/rc.d/S99tailscale
 rm -f /etc/rc.d/K10tailscale
@@ -24,7 +28,7 @@ uci -q delete firewall.ts_wan_forward
 uci -q delete network.tailscale
 
 # Restore DNS config if killswitch was enabled
-DNS_BACKUP="/etc/tailscale/dns_backup"
+DNS_BACKUP="${TAILSCALE_STATEDIR}/dns_backup"
 if [ -f "$DNS_BACKUP" ]; then
     uci -q delete dhcp.@dnsmasq[0].server
     while IFS= read -r server || [ -n "$server" ]; do
@@ -43,10 +47,10 @@ uci commit network 2>/dev/null || true
 /etc/init.d/network reload 2>/dev/null || true
 
 # Clean up runtime files
-rm -rf /var/run/tailscale
+rm -rf "$TAILSCALE_RUNDIR"
 
-# Note: /etc/tailscale is preserved for reinstallation
+# Note: State directory is preserved for reinstallation
 # Users can manually remove it if desired:
-#   rm -rf /etc/tailscale
+#   rm -rf "$TAILSCALE_STATEDIR"
 
 exit 0

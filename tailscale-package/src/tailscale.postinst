@@ -1,13 +1,26 @@
 #!/bin/sh
 # Tailscale postinst - configure network, firewall, and hardware optimizations
 
+# Centralized path configuration
+TAILSCALE_RUNDIR="/var/run/tailscale"
+TAILSCALE_STATEDIR="/etc/tailscale"
+
+# Helper to run uci commands with error logging
+uci_safe() {
+    if ! uci "$@" 2>/dev/null; then
+        logger -t tailscale "postinst: WARNING - uci $* failed"
+        return 1
+    fi
+    return 0
+}
+
 # Create state directory with secure permissions (in /etc for persistence across reboots)
-mkdir -p /etc/tailscale
-chmod 700 /etc/tailscale
+mkdir -p "$TAILSCALE_STATEDIR"
+chmod 700 "$TAILSCALE_STATEDIR"
 
 # Create runtime directory
-mkdir -p /var/run/tailscale
-chmod 755 /var/run/tailscale
+mkdir -p "$TAILSCALE_RUNDIR"
+chmod 755 "$TAILSCALE_RUNDIR"
 
 # --- Network Interface Setup ---
 # Create tailscale interface if it doesn't exist (using named section for easy cleanup)
@@ -15,10 +28,10 @@ chmod 755 /var/run/tailscale
 # This prevents interference with Tailscale's routing table management.
 if ! uci -q get network.tailscale >/dev/null; then
     logger -t tailscale "postinst: Creating tailscale network interface"
-    uci set network.tailscale=interface
-    uci set network.tailscale.proto='none'
-    uci set network.tailscale.device='tailscale0'
-    uci commit network
+    uci_safe set network.tailscale=interface
+    uci_safe set network.tailscale.proto='none'
+    uci_safe set network.tailscale.device='tailscale0'
+    uci_safe commit network
 fi
 
 # --- Firewall Zone Setup ---
@@ -27,32 +40,32 @@ if ! uci -q get firewall.tailscale_zone >/dev/null; then
     logger -t tailscale "postinst: Creating tailscale firewall zone and forwarding rules"
 
     # Create the zone
-    uci set firewall.tailscale_zone=zone
-    uci set firewall.tailscale_zone.name='tailscale'
-    uci set firewall.tailscale_zone.input='ACCEPT'
-    uci set firewall.tailscale_zone.output='ACCEPT'
-    uci set firewall.tailscale_zone.forward='REJECT'
-    uci set firewall.tailscale_zone.masq='1'
-    uci set firewall.tailscale_zone.mtu_fix='1'
-    uci set firewall.tailscale_zone.device='tailscale0'
+    uci_safe set firewall.tailscale_zone=zone
+    uci_safe set firewall.tailscale_zone.name='tailscale'
+    uci_safe set firewall.tailscale_zone.input='ACCEPT'
+    uci_safe set firewall.tailscale_zone.output='ACCEPT'
+    uci_safe set firewall.tailscale_zone.forward='REJECT'
+    uci_safe set firewall.tailscale_zone.masq='1'
+    uci_safe set firewall.tailscale_zone.mtu_fix='1'
+    uci_safe set firewall.tailscale_zone.device='tailscale0'
 
     # LAN -> Tailscale: Allow LAN devices to reach tailnet and use exit node
-    uci set firewall.lan_ts_forward=forwarding
-    uci set firewall.lan_ts_forward.src='lan'
-    uci set firewall.lan_ts_forward.dest='tailscale'
+    uci_safe set firewall.lan_ts_forward=forwarding
+    uci_safe set firewall.lan_ts_forward.src='lan'
+    uci_safe set firewall.lan_ts_forward.dest='tailscale'
 
     # Tailscale -> LAN: Allow tailnet to reach LAN (for --exit-node-allow-lan-access)
-    uci set firewall.ts_lan_forward=forwarding
-    uci set firewall.ts_lan_forward.src='tailscale'
-    uci set firewall.ts_lan_forward.dest='lan'
+    uci_safe set firewall.ts_lan_forward=forwarding
+    uci_safe set firewall.ts_lan_forward.src='tailscale'
+    uci_safe set firewall.ts_lan_forward.dest='lan'
 
     # Tailscale -> WAN: Required if this router advertises as exit node (disabled by default)
-    uci set firewall.ts_wan_forward=forwarding
-    uci set firewall.ts_wan_forward.src='tailscale'
-    uci set firewall.ts_wan_forward.dest='wan'
-    uci set firewall.ts_wan_forward.enabled='0'
+    uci_safe set firewall.ts_wan_forward=forwarding
+    uci_safe set firewall.ts_wan_forward.src='tailscale'
+    uci_safe set firewall.ts_wan_forward.dest='wan'
+    uci_safe set firewall.ts_wan_forward.enabled='0'
 
-    uci commit firewall
+    uci_safe commit firewall
 fi
 
 # --- Firewall Include for Killswitch ---
@@ -60,11 +73,11 @@ fi
 # This ensures killswitch rules are in place from the first packet
 if ! uci -q get firewall.tailscale_killswitch >/dev/null; then
     logger -t tailscale "postinst: Adding killswitch firewall include"
-    uci set firewall.tailscale_killswitch=include
-    uci set firewall.tailscale_killswitch.type='script'
-    uci set firewall.tailscale_killswitch.path='/usr/sbin/tailscale-killswitch-boot'
-    uci set firewall.tailscale_killswitch.fw4_compatible='1'
-    uci commit firewall
+    uci_safe set firewall.tailscale_killswitch=include
+    uci_safe set firewall.tailscale_killswitch.type='script'
+    uci_safe set firewall.tailscale_killswitch.path='/usr/sbin/tailscale-killswitch-boot'
+    uci_safe set firewall.tailscale_killswitch.fw4_compatible='1'
+    uci_safe commit firewall
 fi
 
 # Reload network and firewall to apply changes
@@ -86,19 +99,19 @@ else
     # Configure based on available RAM
     if [ "$total_ram" -lt 96 ]; then
         # Very low memory (<96MB): aggressive optimization
-        uci set tailscale.hardware.mem_limit='50MiB'
-        uci set tailscale.hardware.gogc='50'
-        uci set tailscale.hardware.no_logs='1'
+        uci_safe set tailscale.hardware.mem_limit='50MiB'
+        uci_safe set tailscale.hardware.gogc='50'
+        uci_safe set tailscale.hardware.no_logs='1'
     elif [ "$total_ram" -lt 192 ]; then
         # Low memory (96-192MB): moderate optimization
-        uci set tailscale.hardware.mem_limit='75MiB'
-        uci set tailscale.hardware.gogc=''
-        uci set tailscale.hardware.no_logs='0'
+        uci_safe set tailscale.hardware.mem_limit='75MiB'
+        uci_safe set tailscale.hardware.gogc=''
+        uci_safe set tailscale.hardware.no_logs='0'
     else
         # Normal memory (>192MB): no restrictions
-        uci set tailscale.hardware.mem_limit=''
-        uci set tailscale.hardware.gogc=''
-        uci set tailscale.hardware.no_logs='0'
+        uci_safe set tailscale.hardware.mem_limit=''
+        uci_safe set tailscale.hardware.gogc=''
+        uci_safe set tailscale.hardware.no_logs='0'
     fi
 
     logger -t tailscale "postinst: ${total_ram}MB RAM detected, auto-configured hardware settings"
@@ -106,12 +119,12 @@ fi
 
 # Detect mobile/LTE interfaces (always update, not user-configurable)
 if ls /sys/class/net/ | grep -qE '^(wwan|usb|lte)'; then
-    uci set tailscale.hardware.has_wwan='1'
+    uci_safe set tailscale.hardware.has_wwan='1'
 else
-    uci set tailscale.hardware.has_wwan='0'
+    uci_safe set tailscale.hardware.has_wwan='0'
 fi
 
-uci commit tailscale
+uci_safe commit tailscale
 
 # Log final configuration
 logger -t tailscale "postinst: mem_limit=$(uci -q get tailscale.hardware.mem_limit), gogc=$(uci -q get tailscale.hardware.gogc), no_logs=$(uci -q get tailscale.hardware.no_logs), has_wwan=$(uci -q get tailscale.hardware.has_wwan)"

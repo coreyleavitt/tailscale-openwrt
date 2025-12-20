@@ -13,7 +13,8 @@ TAILSCALE_INTERFACE="tailscale0"
 TAILSCALE_ZONE_NAME="tailscale"
 LAN_ZONE_NAME="lan"
 WAN_ZONE_NAME="wan"
-DNS_BACKUP_FILE="/etc/tailscale/dns_backup"
+TAILSCALE_STATEDIR="/etc/tailscale"
+DNS_BACKUP_FILE="${TAILSCALE_STATEDIR}/dns_backup"
 MAGIC_DNS="100.100.100.100"
 MAGIC_DNS_V6="fd7a:115c:a1e0::53"
 
@@ -52,6 +53,102 @@ verify_zone() {
     return 0
 }
 
+verify_magicdns() {
+    # Check if MagicDNS is reachable (warns but doesn't block)
+    if ping -c 1 -W 2 "$MAGIC_DNS" >/dev/null 2>&1; then
+        echo "MagicDNS ($MAGIC_DNS): reachable"
+        return 0
+    else
+        echo "WARNING: MagicDNS ($MAGIC_DNS) is not reachable."
+        echo "Ensure Tailscale is running and connected to your tailnet."
+        echo ""
+        return 1
+    fi
+}
+
+verify_rule_order() {
+    # Verify killswitch rules are effective (no earlier accept rules bypass them)
+    # Returns 0 if rules are properly ordered, 1 if potential bypass detected
+    get_openwrt_version
+
+    if [ "${OPENWRT_MAJOR_VERSION}" -ge "23" ]; then
+        # nftables/fw4 - check forward chain
+        if ! command -v nft >/dev/null 2>&1; then
+            echo "  (nft not available)"
+            return 0
+        fi
+
+        # Get forward chain rules
+        local forward_rules
+        forward_rules=$(nft list chain inet fw4 forward 2>/dev/null)
+
+        if [ -z "$forward_rules" ]; then
+            echo "  (could not read forward chain)"
+            return 0
+        fi
+
+        # Check if our killswitch DROP rule exists
+        if ! echo "$forward_rules" | grep -qF "Killswitch"; then
+            echo "  WARNING: Killswitch rules not found in forward chain"
+            return 1
+        fi
+
+        # Look for any accept rule for lan->wan that appears before our drop
+        # fw4 uses zone names in comments, look for patterns like:
+        # "accept" appearing before "Killswitch" with lan/wan context
+        local before_killswitch
+        before_killswitch=$(echo "$forward_rules" | sed -n '1,/Killswitch/p' | head -n -1)
+
+        # Check for forwarding accepts from lan to wan before our rules
+        if echo "$before_killswitch" | grep -qE "lan.*wan.*accept|forward.*lan.*wan.*accept"; then
+            echo "  WARNING: Found accept rule for lan->wan before killswitch"
+            echo "  Traffic may bypass killswitch. Check: nft list chain inet fw4 forward"
+            return 1
+        fi
+
+        echo "  Rule order: OK"
+        return 0
+    else
+        # iptables - check FORWARD chain
+        if ! command -v iptables >/dev/null 2>&1; then
+            echo "  (iptables not available)"
+            return 0
+        fi
+
+        # Get FORWARD chain with line numbers
+        local forward_rules
+        forward_rules=$(iptables -L FORWARD -nv --line-numbers 2>/dev/null)
+
+        if [ -z "$forward_rules" ]; then
+            echo "  (could not read FORWARD chain)"
+            return 0
+        fi
+
+        # Find line number of our killswitch rule
+        local killswitch_line
+        killswitch_line=$(echo "$forward_rules" | grep -n "Killswitch" | head -1 | cut -d: -f1)
+
+        if [ -z "$killswitch_line" ]; then
+            echo "  WARNING: Killswitch rules not found in FORWARD chain"
+            return 1
+        fi
+
+        # Check for ACCEPT rules before our killswitch that match lan->wan
+        local before_killswitch
+        before_killswitch=$(echo "$forward_rules" | head -n "$killswitch_line")
+
+        # Look for accepts that might bypass (this is heuristic)
+        if echo "$before_killswitch" | grep -E "ACCEPT.*all.*anywhere.*anywhere" | grep -qv "state\|ctstate"; then
+            echo "  WARNING: Found broad ACCEPT rule before killswitch"
+            echo "  Traffic may bypass killswitch. Check: iptables -L FORWARD -nv --line-numbers"
+            return 1
+        fi
+
+        echo "  Rule order: OK"
+        return 0
+    fi
+}
+
 reload_services() {
     echo "Applying changes..."
     uci commit firewall
@@ -69,12 +166,12 @@ reload_services() {
 apply_blocking_rules() {
     # Add blocking rules (used by both enable and apply-rules)
 
-    # 1. Block LAN to WAN traffic
+    # 1. Block LAN to WAN traffic (DROP for stealth - no ICMP response)
     uci set firewall.lan_to_wan_block=rule
     uci set firewall.lan_to_wan_block.name='Block LAN to WAN (Killswitch)'
     uci set firewall.lan_to_wan_block.src="${LAN_ZONE_NAME}"
     uci set firewall.lan_to_wan_block.dest="${WAN_ZONE_NAME}"
-    uci set firewall.lan_to_wan_block.target='REJECT'
+    uci set firewall.lan_to_wan_block.target='DROP'
     uci set firewall.lan_to_wan_block.family='any'
 
     # 2. Block DNS to WAN (prevent LAN client DNS leaks)
@@ -84,7 +181,7 @@ apply_blocking_rules() {
     uci set firewall.block_wan_dns.dest="${WAN_ZONE_NAME}"
     uci set firewall.block_wan_dns.dest_port='53'
     uci set firewall.block_wan_dns.proto='tcp udp'
-    uci set firewall.block_wan_dns.target='REJECT'
+    uci set firewall.block_wan_dns.target='DROP'
     uci set firewall.block_wan_dns.family='any'
 
     # 3. Allow DNS to Tailscale zone
@@ -148,6 +245,7 @@ enable_killswitch() {
 
     verify_zone || return 1
     verify_interface
+    verify_magicdns
 
     # Clean up any existing rules first
     remove_blocking_rules
@@ -180,7 +278,7 @@ enable_killswitch() {
 
     echo ""
     echo "Killswitch enabled successfully."
-    echo "  - All LAN to WAN traffic blocked"
+    echo "  - All LAN to WAN traffic silently dropped"
     echo "  - DNS redirected to Tailscale MagicDNS"
     echo "  - Traffic can only flow through Tailscale exit node"
 }
@@ -284,6 +382,13 @@ check_status() {
             echo "WARNING: Router DNS not pointing to MagicDNS"
         fi
 
+        # Check MagicDNS reachability
+        if ping -c 1 -W 2 "$MAGIC_DNS" >/dev/null 2>&1; then
+            echo "MagicDNS: reachable"
+        else
+            echo "WARNING: MagicDNS not reachable - DNS queries will fail"
+        fi
+
         return 0
     else
         echo "Killswitch: DISABLED"
@@ -334,6 +439,10 @@ check_status_verbose() {
         echo "  Tailscale may not be running. Check: /etc/init.d/tailscale status"
     fi
 
+    echo ""
+    echo "--- Rule Order Verification ---"
+    verify_rule_order
+
     echo "---------------------------------------"
     return $status
 }
@@ -368,7 +477,7 @@ case "$1" in
         echo "  status   - Check if killswitch is enabled"
         echo ""
         echo "When enabled, this script:"
-        echo "  - Blocks all LAN to WAN traffic (IPv4 and IPv6)"
+        echo "  - Silently drops all LAN to WAN traffic (IPv4 and IPv6)"
         echo "  - Redirects router DNS to Tailscale MagicDNS"
         echo "  - Prevents DNS leaks from both LAN clients and the router"
         echo "  - If Tailscale/exit node fails, NO traffic leaks to WAN"
