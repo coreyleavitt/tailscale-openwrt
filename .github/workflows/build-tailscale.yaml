@@ -95,11 +95,33 @@ jobs:
       id-token: write
       attestations: write
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: packages
           merge-multiple: true
+
+      - name: Connect to Tailscale
+        uses: tailscale/github-action@v4
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          audience: ${{ secrets.TS_AUDIENCE }}
+          tags: tag:ci
+
+      - name: Sign packages
+        run: |
+          for ipk in packages/*.ipk; do
+            echo "Signing $ipk..."
+            MESSAGE=$(base64 -w0 "$ipk")
+            RESPONSE=$(curl -sf -X POST https://sign.leavitt.info/sign \
+              -H "Content-Type: application/json" \
+              -d "{\"message\": \"$MESSAGE\"}")
+            echo "$RESPONSE" | jq -r .signature | base64 -d > "${ipk}.sig"
+            echo "Created ${ipk}.sig"
+          done
 
       - name: Generate checksums
         run: |
