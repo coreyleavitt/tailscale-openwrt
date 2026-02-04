@@ -194,6 +194,14 @@ apply_blocking_rules() {
     uci set firewall.allow_ts_dns.target='ACCEPT'
     uci set firewall.allow_ts_dns.family='any'
 
+    # 4. Allow all LAN to Tailscale traffic (for accessing advertised routes)
+    uci set firewall.allow_ts_traffic=rule
+    uci set firewall.allow_ts_traffic.name='Allow LAN to Tailscale (Killswitch)'
+    uci set firewall.allow_ts_traffic.src="${LAN_ZONE_NAME}"
+    uci set firewall.allow_ts_traffic.dest="${TAILSCALE_ZONE_NAME}"
+    uci set firewall.allow_ts_traffic.target='ACCEPT'
+    uci set firewall.allow_ts_traffic.family='any'
+
     uci commit firewall
 }
 
@@ -202,6 +210,7 @@ remove_blocking_rules() {
     uci -q delete firewall.lan_to_wan_block
     uci -q delete firewall.block_wan_dns
     uci -q delete firewall.allow_ts_dns
+    uci -q delete firewall.allow_ts_traffic
     uci commit firewall
 }
 
@@ -422,6 +431,10 @@ check_status_verbose() {
     echo ""
     echo "Allow Tailscale DNS:"
     uci show firewall.allow_ts_dns 2>/dev/null || echo "  (not configured)"
+
+    echo ""
+    echo "Allow LAN to Tailscale:"
+    uci show firewall.allow_ts_traffic 2>/dev/null || echo "  (not configured)"
 
     echo ""
     echo "Router DNS Config:"
