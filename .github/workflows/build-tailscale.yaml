@@ -119,10 +119,29 @@ jobs:
             echo -n '{"message": "' > /tmp/request.json
             base64 -w0 "$ipk" >> /tmp/request.json
             echo -n '"}' >> /tmp/request.json
-            curl -sf -X POST https://sign.leavitt.info/sign \
-              -H "Content-Type: application/json" \
-              -d @/tmp/request.json | jq -r .signature | base64 -d > "${ipk}.sig"
-            echo "Created ${ipk}.sig"
+            # Sign with retry and error handling
+            for attempt in 1 2 3; do
+              echo "  Attempt $attempt..."
+              if RESPONSE=$(curl -s --fail-with-body -X POST https://sign.leavitt.info/sign \
+                -H "Content-Type: application/json" \
+                -d @/tmp/request.json 2>&1); then
+                SIGNATURE=$(echo "$RESPONSE" | jq -r .signature)
+                if [ -n "$SIGNATURE" ] && [ "$SIGNATURE" != "null" ]; then
+                  echo "$SIGNATURE" | base64 -d > "${ipk}.sig"
+                  if [ -s "${ipk}.sig" ]; then
+                    echo "  Created ${ipk}.sig ($(stat -c%s "${ipk}.sig") bytes)"
+                    break
+                  fi
+                fi
+              fi
+              echo "  Failed, response: $RESPONSE"
+              [ "$attempt" -lt 3 ] && sleep 5
+            done
+            # Verify signature was created
+            if [ ! -s "${ipk}.sig" ]; then
+              echo "ERROR: Failed to sign $ipk after 3 attempts"
+              exit 1
+            fi
           done
 
       - name: Generate checksums
