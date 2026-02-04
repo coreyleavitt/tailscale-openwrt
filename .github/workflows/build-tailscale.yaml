@@ -115,11 +115,10 @@ jobs:
         run: |
           for ipk in packages/*.ipk; do
             echo "Signing $ipk..."
-            MESSAGE=$(base64 -w0 "$ipk")
-            RESPONSE=$(curl -sf -X POST https://sign.leavitt.info/sign \
+            jq -n --arg msg "$(base64 -w0 "$ipk")" '{"message": $msg}' > /tmp/request.json
+            curl -sf -X POST https://sign.leavitt.info/sign \
               -H "Content-Type: application/json" \
-              -d "{\"message\": \"$MESSAGE\"}")
-            echo "$RESPONSE" | jq -r .signature | base64 -d > "${ipk}.sig"
+              -d @/tmp/request.json | jq -r .signature | base64 -d > "${ipk}.sig"
             echo "Created ${ipk}.sig"
           done
 
