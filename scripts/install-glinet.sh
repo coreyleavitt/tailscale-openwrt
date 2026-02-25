@@ -205,12 +205,21 @@ show_status() {
     echo "Installed version:"
     /usr/sbin/tailscaled --version 2>/dev/null || echo "  (unable to determine)"
     echo ""
+    # Poll for service startup (UPX-compressed binary can take time to decompress)
+    echo -n "Waiting for service to start"
+    for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+        if pgrep -x tailscaled >/dev/null 2>&1; then
+            echo ""
+            echo "Service status:"
+            echo "  tailscaled is running"
+            return
+        fi
+        echo -n "."
+        sleep 1
+    done
+    echo ""
     echo "Service status:"
-    if pgrep -x tailscaled >/dev/null 2>&1; then
-        echo "  tailscaled is running"
-    else
-        echo "  tailscaled is not running"
-    fi
+    echo "  tailscaled is not running (may still be starting)"
 }
 
 # Parse arguments
