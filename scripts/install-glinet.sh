@@ -154,8 +154,8 @@ download_binary() {
         exit 1
     fi
 
-    # Verify it's actually an executable
-    if ! file "$tmpfile" | grep -q "ELF"; then
+    # Verify it's actually an ELF binary (check magic bytes: 7f 45 4c 46)
+    if ! dd if="$tmpfile" bs=4 count=1 2>/dev/null | od -A n -t x1 | grep -q "7f 45 4c 46"; then
         rm -f "$tmpfile"
         log_error "Downloaded file is not a valid binary"
         exit 1
