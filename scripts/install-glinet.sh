@@ -154,8 +154,9 @@ download_binary() {
         exit 1
     fi
 
-    # Verify it's actually an ELF binary (check magic bytes: 7f 45 4c 46)
-    if ! dd if="$tmpfile" bs=4 count=1 2>/dev/null | od -A n -t x1 | grep -q "7f 45 4c 46"; then
+    # Verify it's actually a valid tailscale binary
+    chmod +x "$tmpfile"
+    if ! "$tmpfile" --version >/dev/null 2>&1; then
         rm -f "$tmpfile"
         log_error "Downloaded file is not a valid binary"
         exit 1
