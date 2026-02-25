@@ -207,7 +207,7 @@ show_status() {
     echo ""
     # Poll for service startup (UPX-compressed binary can take time to decompress)
     echo -n "Waiting for service to start"
-    for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+    for i in $(seq 1 30); do
         if pgrep -x tailscaled >/dev/null 2>&1; then
             echo ""
             echo "Service status:"
