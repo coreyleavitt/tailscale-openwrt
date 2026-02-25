@@ -26,9 +26,9 @@ else
     NC=''
 fi
 
-log_info() { printf "${GREEN}[INFO]${NC} %s\n" "$1"; }
-log_warn() { printf "${YELLOW}[WARN]${NC} %s\n" "$1"; }
-log_error() { printf "${RED}[ERROR]${NC} %s\n" "$1"; }
+log_info() { printf "${GREEN}[INFO]${NC} %s\n" "$1" >&2; }
+log_warn() { printf "${YELLOW}[WARN]${NC} %s\n" "$1" >&2; }
+log_error() { printf "${RED}[ERROR]${NC} %s\n" "$1" >&2; }
 
 usage() {
     cat <<EOF
