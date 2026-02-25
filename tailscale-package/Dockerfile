@@ -70,7 +70,7 @@ RUN GOARCH=$(case "${OPENWRT_ARCH}" in \
     go build \
         -trimpath \
         -buildvcs=false \
-        -tags 'ts_include_cli,ts_omit_aws,ts_omit_bird,ts_omit_tap' \
+        -tags 'ts_include_cli,ts_omit_aws,ts_omit_bird,ts_omit_tap,ts_omit_clientupdate' \
         -ldflags="-s -w -X tailscale.com/version.longStamp=${TAILSCALE_VERSION} -X tailscale.com/version.shortStamp=${TAILSCALE_VERSION}" \
         -o /build/tailscaled \
         ./cmd/tailscaled
