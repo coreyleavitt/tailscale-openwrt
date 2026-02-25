@@ -16,8 +16,10 @@ Pre-built Tailscale packages for OpenWrt routers with automatic network/firewall
 
 | Architecture | Devices | OpenWrt Version |
 |-------------|---------|-----------------|
-| mips_24kc | GL.iNet E750, AR750S, and similar | 22.03+ |
-| aarch64_cortex-a53 | Cudy TR3000 and similar | 24.10+ |
+| aarch64_cortex-a53 | GL-MT2500, GL-MT3000, Cudy M3000 | 22.03+ |
+| arm_cortex-a7 | GL-AR750, ipq40xx devices, RPi 2 | 22.03+ |
+| mips_24kc | GL.iNet E750, AR750S | 22.03+ |
+| mipsel_24kc | Cudy LT400E, WR1300S, MT7621/MT7628 | 22.03+ |
 
 ## Quick Start
 

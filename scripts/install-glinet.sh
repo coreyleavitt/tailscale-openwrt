@@ -75,12 +75,18 @@ detect_arch() {
         aarch64)
             echo "aarch64_cortex-a53"
             ;;
+        armv7l)
+            echo "arm_cortex-a7"
+            ;;
         mips)
             echo "mips_24kc"
             ;;
+        mipsel)
+            echo "mipsel_24kc"
+            ;;
         *)
             log_error "Unsupported architecture: $machine"
-            log_error "This script supports aarch64 and mips only"
+            log_error "This script supports aarch64, armv7l, mips, and mipsel"
             exit 1
             ;;
     esac

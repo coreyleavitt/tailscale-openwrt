@@ -55,8 +55,6 @@ jobs:
 
   build-aarch64:
     runs-on: ubuntu-latest
-    outputs:
-      version: ${{ steps.version.outputs.version }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -93,8 +91,84 @@ jobs:
           name: tailscale-aarch64_cortex-a53
           path: packages/*
 
+  build-arm7:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set version
+        id: version
+        run: |
+          echo "version=${{ github.event.inputs.tailscale_version }}" >> $GITHUB_OUTPUT
+          echo "release=${{ github.event.inputs.pkg_release }}" >> $GITHUB_OUTPUT
+
+      - name: Build arm_cortex-a7 package
+        run: |
+          cd tailscale-package
+          docker build \
+            --build-arg TAILSCALE_VERSION=${{ steps.version.outputs.version }} \
+            --build-arg PKG_RELEASE=${{ steps.version.outputs.release }} \
+            --build-arg OPENWRT_ARCH=arm_cortex-a7 \
+            -t tailscale-arm7:latest \
+            -f Dockerfile .
+
+      - name: Extract package and binary
+        run: |
+          mkdir -p packages
+          docker run --rm tailscale-arm7:latest \
+            cat /tailscale_${{ steps.version.outputs.version }}_arm_cortex-a7.ipk \
+            > packages/tailscale_${{ steps.version.outputs.version }}_arm_cortex-a7.ipk
+          docker run --rm tailscale-arm7:latest \
+            cat /tailscaled_arm_cortex-a7 \
+            > packages/tailscaled_${{ steps.version.outputs.version }}_arm_cortex-a7
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tailscale-arm_cortex-a7
+          path: packages/*
+
+  build-mipsel:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set version
+        id: version
+        run: |
+          echo "version=${{ github.event.inputs.tailscale_version }}" >> $GITHUB_OUTPUT
+          echo "release=${{ github.event.inputs.pkg_release }}" >> $GITHUB_OUTPUT
+
+      - name: Build mipsel_24kc package
+        run: |
+          cd tailscale-package
+          docker build \
+            --build-arg TAILSCALE_VERSION=${{ steps.version.outputs.version }} \
+            --build-arg PKG_RELEASE=${{ steps.version.outputs.release }} \
+            --build-arg OPENWRT_ARCH=mipsel_24kc \
+            -t tailscale-mipsel:latest \
+            -f Dockerfile .
+
+      - name: Extract package and binary
+        run: |
+          mkdir -p packages
+          docker run --rm tailscale-mipsel:latest \
+            cat /tailscale_${{ steps.version.outputs.version }}_mipsel_24kc.ipk \
+            > packages/tailscale_${{ steps.version.outputs.version }}_mipsel_24kc.ipk
+          docker run --rm tailscale-mipsel:latest \
+            cat /tailscaled_mipsel_24kc \
+            > packages/tailscaled_${{ steps.version.outputs.version }}_mipsel_24kc
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tailscale-mipsel_24kc
+          path: packages/*
+
   release:
-    needs: [build-mips, build-aarch64]
+    needs: [build-mips, build-aarch64, build-arm7, build-mipsel]
     runs-on: ubuntu-latest
     permissions:
       contents: write

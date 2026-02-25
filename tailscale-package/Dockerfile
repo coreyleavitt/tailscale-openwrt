@@ -47,13 +47,25 @@ RUN curl -L "https://github.com/tailscale/tailscale/archive/refs/tags/v${TAILSCA
 
 # Build Tailscale binary with size optimizations
 # GOTOOLCHAIN=auto downloads whatever Go version Tailscale requires
+# Architecture mapping:
+#   aarch64*     -> arm64
+#   arm_cortex*  -> arm (GOARM=7)
+#   mipsel*      -> mipsle (GOMIPS=softfloat)
+#   mips*        -> mips (GOMIPS=softfloat)
 WORKDIR /build/tailscale
-RUN GOARCH=$(echo ${OPENWRT_ARCH} | grep -q aarch64 && echo arm64 || (echo ${OPENWRT_ARCH} | grep -q mipsel && echo mipsle || echo mips)) && \
-    echo "Building for GOARCH=${GOARCH}" && \
+RUN GOARCH=$(case "${OPENWRT_ARCH}" in \
+      aarch64*) echo "arm64" ;; \
+      arm_cortex*) echo "arm" ;; \
+      mipsel*) echo "mipsle" ;; \
+      *) echo "mips" ;; \
+    esac) && \
+    GOARM=$(echo ${OPENWRT_ARCH} | grep -q arm_cortex && echo "7" || echo "") && \
+    echo "Building for GOARCH=${GOARCH} GOARM=${GOARM}" && \
     GOTOOLCHAIN=auto \
     CGO_ENABLED=0 \
     GOOS=linux \
     GOARCH=${GOARCH} \
+    GOARM=${GOARM} \
     GOMIPS=softfloat \
     go build \
         -trimpath \
