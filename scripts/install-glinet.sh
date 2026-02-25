@@ -167,6 +167,7 @@ download_binary() {
 
 install_binary() {
     tmpfile="$1"
+    version="$2"
 
     log_info "Stopping Tailscale service..."
     /usr/bin/gl_tailscale stop 2>/dev/null || true
@@ -179,6 +180,11 @@ install_binary() {
     # Create tailscale symlink if it doesn't exist or points elsewhere
     if [ ! -L /usr/sbin/tailscale ] || [ "$(readlink /usr/sbin/tailscale)" != "tailscaled" ]; then
         ln -sf tailscaled /usr/sbin/tailscale
+    fi
+
+    # Update opkg status so 'opkg list-installed' shows correct version
+    if [ -f /usr/lib/opkg/status ]; then
+        sed -i "/^Package: tailscale$/,/^$/s/^Version: .*/Version: ${version}/" /usr/lib/opkg/status
     fi
 
     log_info "Starting Tailscale service..."
@@ -273,5 +279,5 @@ if [ -x /usr/sbin/tailscaled ]; then
 fi
 
 tmpfile=$(download_binary "$VERSION" "$ARCH")
-install_binary "$tmpfile"
+install_binary "$tmpfile" "$VERSION"
 show_status
