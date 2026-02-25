@@ -10,6 +10,7 @@ ARG TAILSCALE_VERSION=1.92.2
 ARG OPENWRT_ARCH=mips_24kc
 ARG PKG_RELEASE=1
 ARG SKIP_UPX=0
+ARG GLINET_VARIANT=0
 
 FROM registry.opensuse.org/opensuse/tumbleweed:latest
 
@@ -154,5 +155,9 @@ RUN opkg-build /ipk /tmp && \
     mv /tmp/tailscale_${TAILSCALE_VERSION}-${PKG_RELEASE}_${OPENWRT_ARCH}.ipk \
        /tailscale_${TAILSCALE_VERSION}_${OPENWRT_ARCH}.ipk
 
+# Copy raw binary for GL.iNet installs (no IPK, just the binary)
+RUN cp /build/tailscaled /tailscaled_${OPENWRT_ARCH}
+
 # Final output location
-# Extract with: docker run --rm <image> cat /tailscale_*.ipk > package.ipk
+# Extract IPK: docker run --rm <image> cat /tailscale_*.ipk > package.ipk
+# Extract binary: docker run --rm <image> cat /tailscaled_<arch> > tailscaled

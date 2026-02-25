@@ -37,18 +37,21 @@ jobs:
             -t tailscale-mips_24kc:latest \
             -f Dockerfile .
 
-      - name: Extract package
+      - name: Extract package and binary
         run: |
           mkdir -p packages
           docker run --rm tailscale-mips_24kc:latest \
             cat /tailscale_${{ steps.version.outputs.version }}_mips_24kc.ipk \
             > packages/tailscale_${{ steps.version.outputs.version }}_mips_24kc.ipk
+          docker run --rm tailscale-mips_24kc:latest \
+            cat /tailscaled_mips_24kc \
+            > packages/tailscaled_${{ steps.version.outputs.version }}_mips_24kc
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: tailscale-mips_24kc
-          path: packages/*.ipk
+          path: packages/*
 
   build-aarch64:
     runs-on: ubuntu-latest
@@ -74,18 +77,21 @@ jobs:
             -t tailscale-aarch64:latest \
             -f Dockerfile .
 
-      - name: Extract package
+      - name: Extract package and binary
         run: |
           mkdir -p packages
           docker run --rm tailscale-aarch64:latest \
             cat /tailscale_${{ steps.version.outputs.version }}_aarch64_cortex-a53.ipk \
             > packages/tailscale_${{ steps.version.outputs.version }}_aarch64_cortex-a53.ipk
+          docker run --rm tailscale-aarch64:latest \
+            cat /tailscaled_aarch64_cortex-a53 \
+            > packages/tailscaled_${{ steps.version.outputs.version }}_aarch64_cortex-a53
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: tailscale-aarch64_cortex-a53
-          path: packages/*.ipk
+          path: packages/*
 
   release:
     needs: [build-mips, build-aarch64]
@@ -147,7 +153,7 @@ jobs:
       - name: Generate checksums
         run: |
           cd packages
-          sha256sum *.ipk > SHA256SUMS
+          sha256sum *.ipk tailscaled_* > SHA256SUMS
 
       - name: Generate SBOM
         uses: anchore/sbom-action@v0

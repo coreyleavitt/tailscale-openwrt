@@ -21,17 +21,36 @@ Pre-built Tailscale packages for OpenWrt routers with automatic network/firewall
 
 ## Quick Start
 
-### 1. Install
+### Stock OpenWrt
 
 Download from [Releases](https://github.com/coreyleavitt/tailscale-openwrt/releases):
 
 ```bash
 cd /tmp
-wget https://github.com/coreyleavitt/tailscale-openwrt/releases/latest/download/tailscale_1.92.3_mips_24kc.ipk
+wget https://github.com/coreyleavitt/tailscale-openwrt/releases/latest/download/tailscale_1.94.1_mips_24kc.ipk
 opkg install tailscale_*.ipk
 ```
 
-### 2. Enable and Start
+### GL.iNet Routers (Firmware 4.x)
+
+GL.iNet firmware includes `gl-sdk4-tailscale` which conflicts with the full IPK. Use the install script to update just the binary:
+
+```bash
+wget -qO- https://raw.githubusercontent.com/coreyleavitt/tailscale-openwrt/master/scripts/install-glinet.sh | sh
+```
+
+Options:
+```bash
+# Install specific version
+wget -qO- ... | sh -s -- -v 1.94.1
+
+# List available versions
+wget -qO- ... | sh -s -- -l
+```
+
+**Note:** Killswitch is not supported on GL.iNet firmware due to their mwan3-based routing infrastructure.
+
+### Enable and Start (Stock OpenWrt)
 
 ```bash
 uci set tailscale.config.enabled='1'
@@ -40,7 +59,7 @@ uci commit tailscale
 /etc/init.d/tailscale start
 ```
 
-### 3. Authenticate
+### Authenticate
 
 ```bash
 tailscale up --ssh
@@ -54,13 +73,13 @@ uci commit tailscale
 /etc/init.d/tailscale restart
 ```
 
-### 4. Configure Exit Node (Optional)
+### Configure Exit Node (Optional)
 
 ```bash
 tailscale up --exit-node=<EXIT_NODE_IP> --exit-node-allow-lan-access --ssh
 ```
 
-### 5. Enable Killswitch (Recommended for Privacy)
+### Enable Killswitch (Recommended for Privacy, Stock OpenWrt Only)
 
 ```bash
 tailscale killswitch enable
