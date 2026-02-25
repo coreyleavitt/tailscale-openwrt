@@ -111,7 +111,7 @@ check_prerequisites() {
         log_warn "GL.iNet firmware not detected"
         log_warn "This script is designed for GL.iNet routers with gl-sdk4-tailscale"
         printf "Continue anyway? [y/N] "
-        read -r response
+        read -r response </dev/tty
         case "$response" in
             [yY]|[yY][eE][sS]) ;;
             *) exit 1 ;;
@@ -270,7 +270,7 @@ if [ -x /usr/sbin/tailscaled ]; then
     if [ "$current" = "$VERSION" ]; then
         log_info "Already running version $VERSION"
         printf "Reinstall anyway? [y/N] "
-        read -r response
+        read -r response </dev/tty
         case "$response" in
             [yY]|[yY][eE][sS]) ;;
             *) exit 0 ;;
