@@ -7,12 +7,15 @@ on:
 
 permissions:
   actions: write
-  contents: read
+  contents: write  # commit state/last-check.json + keepalive heartbeat
 
 jobs:
   check:
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Get latest Tailscale release
         id: tailscale
         run: |
@@ -49,3 +52,51 @@ jobs:
             --repo ${{ github.repository }} \
             -f tailscale_version="$VERSION" \
             -f pkg_release="1"
+
+      - name: Record check state (keepalive)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Self-commit a small state file so the repo stays active and
+          # GitHub never auto-disables this scheduled workflow for 60-day
+          # inactivity. A meaningful commit lands whenever the upstream
+          # version changes; if the repo has otherwise been quiet for >=14
+          # days (well inside the 60-day window), push a heartbeat instead.
+          OUR_LATEST=$(gh release view --repo ${{ github.repository }} \
+            --json tagName --jq .tagName 2>/dev/null || echo "none")
+          mkdir -p state
+          cat > state/last-check.json <<EOF
+          {
+            "upstream_latest": "${{ steps.tailscale.outputs.tag }}",
+            "our_latest_release": "${OUR_LATEST}",
+            "needs_build": ${{ steps.check.outputs.needs_build }}
+          }
+          EOF
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add state/last-check.json
+
+          AGE_DAYS=$(( ( $(date -u +%s) - $(git log -1 --format=%ct) ) / 86400 ))
+          if git diff --cached --quiet; then
+            if [ "$AGE_DAYS" -lt 14 ]; then
+              echo "State unchanged, repo active ${AGE_DAYS}d ago; nothing to do."
+              exit 0
+            fi
+            echo "State unchanged but repo idle ${AGE_DAYS}d; pushing heartbeat."
+            git commit --allow-empty \
+              -m "chore(check): keepalive heartbeat (idle ${AGE_DAYS}d)"
+          else
+            git commit \
+              -m "chore(check): upstream ${{ steps.tailscale.outputs.tag }}"
+          fi
+
+          for attempt in 1 2 3; do
+            if git pull --rebase origin "${GITHUB_REF_NAME}" && git push; then
+              exit 0
+            fi
+            echo "Push attempt ${attempt} failed; retrying."
+            sleep $(( attempt * 3 ))
+          done
+          echo "ERROR: failed to push state after 3 attempts" >&2
+          exit 1
