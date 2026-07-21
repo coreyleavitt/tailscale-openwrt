@@ -208,6 +208,72 @@ assert_eq "build-apk and build-ipk read the identical matrix expression" \
 
 echo
 
+# --- structural: arm_cortex-a7 softfloat fix (GOARM=5, not hardcoded 7) -----
+#
+# Regression guard for the live correctness bug: arm_cortex-a7 is OpenWrt's
+# BARE, FPU-less Cortex-A7 package arch (distinct from cortex-a7_vfpv4 /
+# cortex-a7_neon-vfpv4, which do carry a hard-float ABI). A GOARM=7 Go binary
+# emits hardware VFP instructions and SIGILLs on genuinely FPU-less silicon,
+# AFTER `apk add` reports success. Checks:
+#   (a) arches.json says GOARM=5 (softfloat) for arm_cortex-a7, and the other
+#       three arches' goarm/gomips are unchanged.
+#   (b) build-apk.sh looks up goarm/gomips per-arch from arches.json and
+#       passes them through as explicit --build-arg (rather than letting the
+#       Dockerfile guess from the OPENWRT_ARCH name).
+#   (c) the Dockerfile's `build` stage declares ARG GOARM/GOMIPS (so it can
+#       honor a caller-supplied value) and no longer contains the old
+#       hardcode-by-name bug (`grep -q arm_cortex && echo "7"`).
+
+echo "=== structural: arm_cortex-a7 GOARM=5 fix (not hardcoded GOARM=7) ==="
+
+BUILD_APK_SH="${PKG_DIR}/build-apk.sh"
+DOCKERFILE="${PKG_DIR}/Dockerfile"
+
+assert_eq "arches.json: arm_cortex-a7 goarm is 5 (softfloat)" "5" \
+    "$(jq -r '.[] | select(.name == "arm_cortex-a7") | .goarm' "${ARCHES_JSON}")"
+assert_eq "arches.json: aarch64_cortex-a53 goarm unchanged (empty, arm64 ignores it)" "" \
+    "$(jq -r '.[] | select(.name == "aarch64_cortex-a53") | .goarm' "${ARCHES_JSON}")"
+assert_eq "arches.json: mips_24kc gomips unchanged (softfloat)" "softfloat" \
+    "$(jq -r '.[] | select(.name == "mips_24kc") | .gomips' "${ARCHES_JSON}")"
+assert_eq "arches.json: mipsel_24kc gomips unchanged (softfloat)" "softfloat" \
+    "$(jq -r '.[] | select(.name == "mipsel_24kc") | .gomips' "${ARCHES_JSON}")"
+assert_eq "arches.json: mipsel_24kc goarch unchanged (mipsle)" "mipsle" \
+    "$(jq -r '.[] | select(.name == "mipsel_24kc") | .goarch' "${ARCHES_JSON}")"
+assert_eq "arches.json: aarch64_cortex-a53 goarch unchanged (arm64)" "arm64" \
+    "$(jq -r '.[] | select(.name == "aarch64_cortex-a53") | .goarch' "${ARCHES_JSON}")"
+
+if [ ! -f "${BUILD_APK_SH}" ]; then
+    echo "FAIL: ${BUILD_APK_SH} not found" >&2
+    FAIL=1
+fi
+if [ ! -f "${DOCKERFILE}" ]; then
+    echo "FAIL: ${DOCKERFILE} not found" >&2
+    FAIL=1
+fi
+
+BUILD_APK_SH_TEXT=$(cat "${BUILD_APK_SH}")
+DOCKERFILE_TEXT=$(cat "${DOCKERFILE}")
+
+assert_contains "build-apk.sh looks up .goarm from arches.json" \
+    "${BUILD_APK_SH_TEXT}" '.goarm'
+assert_contains "build-apk.sh looks up .gomips from arches.json" \
+    "${BUILD_APK_SH_TEXT}" '.gomips'
+assert_contains "build-apk.sh passes GOARM as an explicit docker --build-arg" \
+    "${BUILD_APK_SH_TEXT}" '--build-arg GOARM='
+assert_contains "build-apk.sh passes GOMIPS as an explicit docker --build-arg" \
+    "${BUILD_APK_SH_TEXT}" '--build-arg GOMIPS='
+
+assert_contains "Dockerfile build stage declares ARG GOARM (honors caller value)" \
+    "${DOCKERFILE_TEXT}" 'ARG GOARM'
+assert_contains "Dockerfile build stage declares ARG GOMIPS (honors caller value)" \
+    "${DOCKERFILE_TEXT}" 'ARG GOMIPS'
+assert_contains "Dockerfile go build passes through the GOARM build arg" \
+    "${DOCKERFILE_TEXT}" 'GOARM=${GOARM}'
+assert_not_contains "Dockerfile no longer hardcodes GOARM=7 by matching the arm_cortex* name" \
+    "${DOCKERFILE_TEXT}" 'grep -q arm_cortex'
+
+echo
+
 # --- optional empirical: one-arch real build ------------------------------
 
 if [ "${DO_BUILD}" -eq 0 ]; then
@@ -240,5 +306,44 @@ else
 fi
 
 docker rmi "tailscale-apk-${TEST_ARCH}:v${TEST_VERSION}" >/dev/null 2>&1 || true
+
+# --- optional empirical: arm_cortex-a7 actually compiles with GOARM=5 -----
+#
+# Cheap real-build smoke test for the fix itself: build only the `build`
+# stage (Go cross-compile, no apk packaging) for arm_cortex-a7 with GOARM
+# sourced from arches.json exactly as build-apk.sh does, and grep the
+# Dockerfile's own "Building for GOARCH=... GOARM=... GOMIPS=..." echo out
+# of the plain-progress build log to confirm GOARM=5 (softfloat) was what
+# actually reached `go build` -- not just what arches.json/build-apk.sh
+# *say* should happen.
+
+echo
+echo "=== empirical: arm_cortex-a7 go build receives GOARM=5 (build stage only) ==="
+
+ARM7_GOARM=$(jq -r '.[] | select(.name == "arm_cortex-a7") | .goarm' "${ARCHES_JSON}")
+ARM7_LOG="${WORKDIR}/arm7-build.log"
+
+(
+    cd "${PKG_DIR}"
+    docker build \
+        --progress=plain \
+        --target build \
+        --build-arg TAILSCALE_VERSION="${TEST_VERSION}" \
+        --build-arg PKG_RELEASE="${TEST_PKG_RELEASE}" \
+        --build-arg OPENWRT_ARCH=arm_cortex-a7 \
+        --build-arg GOARM="${ARM7_GOARM}" \
+        --build-arg SKIP_UPX=1 \
+        -t tailscale-build-smoke-arm_cortex-a7:test \
+        -f Dockerfile \
+        . > "${ARM7_LOG}" 2>&1
+)
+
+if grep -q 'Building for GOARCH=arm GOARM=5 ' "${ARM7_LOG}"; then
+    log_info "OK: arm_cortex-a7 build stage compiled with GOARCH=arm GOARM=5"
+else
+    log_fail "arm_cortex-a7 build stage did not report GOARCH=arm GOARM=5 -- see ${ARM7_LOG}"
+fi
+
+docker rmi "tailscale-build-smoke-arm_cortex-a7:test" >/dev/null 2>&1 || true
 
 harness_finish "tests/apk/apk-matrix.sh"

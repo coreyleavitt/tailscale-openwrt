@@ -5,12 +5,24 @@
 #   TAILSCALE_VERSION - Tailscale version to build (e.g., 1.92.2)
 #   OPENWRT_ARCH      - OpenWrt architecture (mips_24kc or aarch64_cortex-a53)
 #   PKG_RELEASE       - Package release number (default: 1)
+#   GOARM             - Go ARM float ABI (e.g. "5" for softfloat, "7" for
+#                       hard-float); should come from arches.json's per-arch
+#                       goarm field, not be guessed from OPENWRT_ARCH's name.
+#   GOMIPS            - Go MIPS float ABI (e.g. "softfloat"); ditto, from
+#                       arches.json's gomips field. Defaults to "softfloat"
+#                       when unset.
 
 ARG TAILSCALE_VERSION=1.92.2
 ARG OPENWRT_ARCH=mips_24kc
 ARG PKG_RELEASE=1
 ARG SKIP_UPX=0
 ARG GLINET_VARIANT=0
+# GOARM/GOMIPS: optional overrides, normally sourced from arches.json by
+# build-apk.sh/build.sh's caller and passed as --build-arg. Left empty by
+# default so this stage falls back to its own OPENWRT_ARCH-derived values
+# below for any caller that doesn't pass them explicitly.
+ARG GOARM=
+ARG GOMIPS=
 
 # Host apk-tools 3, pinned to the version OpenWrt 25.12.0 ships (3.0.2), for
 # `apk mkpkg`/`apk mkndx` (A2 packages the .apk with these). O3 (see
@@ -57,6 +69,8 @@ ARG TAILSCALE_VERSION
 ARG OPENWRT_ARCH
 ARG PKG_RELEASE
 ARG SKIP_UPX
+ARG GOARM
+ARG GOMIPS
 
 # Install all build dependencies
 RUN zypper --non-interactive refresh && \
@@ -99,11 +113,22 @@ RUN curl -L "https://github.com/tailscale/tailscale/archive/refs/tags/v${TAILSCA
 
 # Build Tailscale binary with size optimizations
 # GOTOOLCHAIN=auto downloads whatever Go version Tailscale requires
-# Architecture mapping:
+# GOARCH is always derived from OPENWRT_ARCH's name (arch family never
+# changes). GOARM/GOMIPS are NOT re-derived from the name -- they come
+# straight from the GOARM/GOMIPS build args (sourced from arches.json's
+# per-arch goarm/gomips fields by the caller, e.g. build-apk.sh), since a
+# single OPENWRT_ARCH family can span multiple float ABIs (e.g. the bare,
+# FPU-less `arm_cortex-a7` package arch needs GOARM=5/softfloat, while a
+# hypothetical `cortex-a7_vfpv4` needs GOARM=7/hard-float -- guessing from
+# the name alone previously hardcoded GOARM=7 for every arm_cortex* name
+# and shipped a hard-float binary that SIGILLs on genuinely FPU-less
+# silicon even though `apk add` reports success). GOMIPS defaults to
+# "softfloat" when not passed, since every mips/mipsel arch currently
+# shipped needs it and Go ignores GOMIPS for non-mips GOARCH anyway.
 #   aarch64*     -> arm64
-#   arm_cortex*  -> arm (GOARM=7)
-#   mipsel*      -> mipsle (GOMIPS=softfloat)
-#   mips*        -> mips (GOMIPS=softfloat)
+#   arm_cortex*  -> arm
+#   mipsel*      -> mipsle
+#   mips*        -> mips
 WORKDIR /build/tailscale
 RUN GOARCH=$(case "${OPENWRT_ARCH}" in \
       aarch64*) echo "arm64" ;; \
@@ -111,14 +136,16 @@ RUN GOARCH=$(case "${OPENWRT_ARCH}" in \
       mipsel*) echo "mipsle" ;; \
       *) echo "mips" ;; \
     esac) && \
-    GOARM=$(echo ${OPENWRT_ARCH} | grep -q arm_cortex && echo "7" || echo "") && \
-    echo "Building for GOARCH=${GOARCH} GOARM=${GOARM}" && \
+    if [ -z "${GOMIPS}" ]; then \
+      GOMIPS="softfloat"; \
+    fi && \
+    echo "Building for GOARCH=${GOARCH} GOARM=${GOARM} GOMIPS=${GOMIPS}" && \
     GOTOOLCHAIN=auto \
     CGO_ENABLED=0 \
     GOOS=linux \
     GOARCH=${GOARCH} \
     GOARM=${GOARM} \
-    GOMIPS=softfloat \
+    GOMIPS=${GOMIPS} \
     go build \
         -trimpath \
         -buildvcs=false \

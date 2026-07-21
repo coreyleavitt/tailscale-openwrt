@@ -14,7 +14,7 @@
   {
     "name": "arm_cortex-a7",
     "goarch": "arm",
-    "goarm": "7",
+    "goarm": "5",
     "gomips": "",
     "endian": "little",
     "rootfs_target": "armsr/armv7",

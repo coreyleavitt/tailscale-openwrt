@@ -5,11 +5,18 @@
 # stage, so it cannot affect build.sh's output.
 #
 # A5b widened this from one arch (A2 scope) to all four arches.json entries:
-# the Dockerfile `apk` stage was already arch-generic (its GOARCH/GOARM/
-# GOMIPS mapping already branches on OPENWRT_ARCH for all four cases -- see
+# the Dockerfile `apk` stage was already arch-generic (its GOARCH mapping
+# already branches on OPENWRT_ARCH for all four cases -- see
 # tailscale-package/Dockerfile), so the only generalization needed here is
 # looping the existing single-arch build over every arches.json entry. Each
 # arch's output stays namespaced under packages/<arch>/ as before.
+#
+# GOARM/GOMIPS are explicitly looked up per-arch from arches.json below and
+# passed to the Dockerfile as --build-arg (rather than left for the
+# Dockerfile to guess from the OPENWRT_ARCH name) -- see build_one. This was
+# fixed after a latent bug: the Dockerfile used to hardcode GOARM=7 for any
+# `arm_cortex*` name, which is wrong for the bare, FPU-less `arm_cortex-a7`
+# package arch (needs GOARM=5/softfloat) and would SIGILL on real hardware.
 #
 # Usage:
 #   build-apk.sh [version] [pkg_release] [arch]
@@ -35,9 +42,32 @@ fi
 
 APK_VERSION="${VERSION}-r${PKG_RELEASE}"
 
+# jq is needed to look up each arch's goarm/gomips from arches.json, whether
+# building one arch (explicit $ARCH) or the whole matrix (loop below).
+if ! command -v jq >/dev/null 2>&1; then
+    echo "Error: jq is required" >&2
+    exit 1
+fi
+if [ ! -f "${ARCHES_JSON}" ]; then
+    echo "Error: ${ARCHES_JSON} not found" >&2
+    exit 1
+fi
+
 build_one() {
     _arch="$1"
-    echo "Building Tailscale .apk ${APK_VERSION} for ${_arch}..."
+
+    # Look up this arch's goarm/gomips from arches.json and pass them through
+    # explicitly as --build-arg -- the Dockerfile's `build` stage honors these
+    # (falling back to its old derive-from-OPENWRT_ARCH logic only when they
+    # are unset/empty), so arches.json is the single source of truth for the
+    # Go cross-compile flags rather than the Dockerfile re-deriving them from
+    # the arch string. (Root cause of the arm_cortex-a7 GOARM=7/hard-float
+    # SIGILL bug: the Dockerfile used to hardcode GOARM=7 for any
+    # `arm_cortex*` name, ignoring arches.json's goarm field entirely.)
+    _goarm=$(jq -r --arg name "${_arch}" '.[] | select(.name == $name) | .goarm // ""' "${ARCHES_JSON}")
+    _gomips=$(jq -r --arg name "${_arch}" '.[] | select(.name == $name) | .gomips // ""' "${ARCHES_JSON}")
+
+    echo "Building Tailscale .apk ${APK_VERSION} for ${_arch} (GOARM=${_goarm:-none} GOMIPS=${_gomips:-none})..."
     mkdir -p "packages/${_arch}"
 
     docker build \
@@ -46,6 +76,8 @@ build_one() {
         --build-arg TAILSCALE_VERSION=${VERSION} \
         --build-arg PKG_RELEASE=${PKG_RELEASE} \
         --build-arg OPENWRT_ARCH=${_arch} \
+        --build-arg GOARM=${_goarm} \
+        --build-arg GOMIPS=${_gomips} \
         -t tailscale-apk-${_arch}:v${VERSION} \
         -f Dockerfile \
         . || { echo "Error: Failed to build ${_arch} .apk"; exit 1; }
@@ -70,14 +102,6 @@ build_one() {
 if [ -n "${ARCH}" ]; then
     build_one "${ARCH}"
 else
-    if ! command -v jq >/dev/null 2>&1; then
-        echo "Error: jq is required to build all arches (or pass an explicit arch)" >&2
-        exit 1
-    fi
-    if [ ! -f "${ARCHES_JSON}" ]; then
-        echo "Error: ${ARCHES_JSON} not found" >&2
-        exit 1
-    fi
     for _a in $(jq -r '.[].name' "${ARCHES_JSON}"); do
         build_one "${_a}"
     done
