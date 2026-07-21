@@ -212,6 +212,8 @@ jobs:
             --build-arg TAILSCALE_VERSION=${{ steps.version.outputs.version }} \
             --build-arg PKG_RELEASE=${{ steps.version.outputs.release }} \
             --build-arg OPENWRT_ARCH=${{ matrix.arch.name }} \
+            --build-arg GOARM=${{ matrix.arch.goarm }} \
+            --build-arg GOMIPS=${{ matrix.arch.gomips }} \
             -t tailscale-${{ matrix.arch.name }}:latest \
             -f Dockerfile .
 
@@ -280,6 +282,8 @@ jobs:
             --build-arg TAILSCALE_VERSION=${{ steps.version.outputs.version }} \
             --build-arg PKG_RELEASE=${{ steps.version.outputs.release }} \
             --build-arg OPENWRT_ARCH=${{ matrix.arch.name }} \
+            --build-arg GOARM=${{ matrix.arch.goarm }} \
+            --build-arg GOMIPS=${{ matrix.arch.gomips }} \
             -t tailscale-apk-${{ matrix.arch.name }}:latest \
             -f Dockerfile .
 
