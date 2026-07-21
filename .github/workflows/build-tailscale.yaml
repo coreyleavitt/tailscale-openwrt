@@ -202,7 +202,7 @@ jobs:
             # Sign with retry and error handling
             for attempt in 1 2 3; do
               echo "  Attempt $attempt..."
-              if RESPONSE=$(curl -s --fail-with-body -X POST https://sign.leavitt.info/sign \
+              if RESPONSE=$(curl -s --fail-with-body -X POST https://sign.leavitt.info/sign/usign \
                 -H "Content-Type: application/json" \
                 -d @/tmp/request.json 2>&1); then
                 SIGNATURE=$(echo "$RESPONSE" | jq -r .signature)
