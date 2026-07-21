@@ -118,4 +118,30 @@ assert_contains "adbdump: scripts block lists post-install" "${SCRIPTS_BLOCK}" "
 assert_contains "adbdump: scripts block lists pre-deinstall" "${SCRIPTS_BLOCK}" "  pre-deinstall: |"
 assert_contains "adbdump: scripts block lists post-deinstall" "${SCRIPTS_BLOCK}" "  post-deinstall: |"
 
+# --- sysupgrade keep-list: /etc/tailscale/ survives a firmware upgrade ---
+# OpenWrt's sysupgrade reads package-provided keep files from
+# /lib/upgrade/keep.d/<pkgname>; without one, a sysupgrade wipes
+# /etc/tailscale/tailscaled.state (the node's Tailscale identity), forcing
+# re-auth (and re-approval of subnet routes) on every firmware upgrade -- a
+# lockout risk on headless routers.
+#
+# adbdump nests path components (a "lib/upgrade/keep.d" dir entry containing
+# a "tailscale" file entry), and -- unlike the conffiles check above -- the
+# bare substrings "name: tailscale" and "size: 16" are NOT unique enough to
+# assert directly against the whole dump: "name: tailscale" already matches
+# the package's own `info: name: tailscale` field (and the pre-existing
+# usr/bin/tailscale wrapper file entry) regardless of this fix, so a naive
+# assert_contains against ${DUMP} would pass even with no keep.d file at all.
+# Scope to the lib/upgrade/keep.d dir entry's own nested block first (same
+# technique as SCRIPTS_BLOCK below), then assert within that scoped block.
+KEEPD_BLOCK=$(printf '%s\n' "${DUMP}" | awk '
+    /^  - name: lib\/upgrade\/keep\.d$/ { grab=1; print; next }
+    grab && /^  - name:/ { exit }
+    grab { print }
+')
+
+assert_contains "adbdump: lib/upgrade/keep.d dir present" "${DUMP}" "name: lib/upgrade/keep.d"
+assert_contains "adbdump: keep.d block contains tailscale file" "${KEEPD_BLOCK}" "name: tailscale"
+assert_contains "adbdump: keep.d/tailscale size matches '/etc/tailscale/\\n' (16 bytes)" "${KEEPD_BLOCK}" "size: 16"
+
 harness_finish "tests/apk/mkpkg.sh"

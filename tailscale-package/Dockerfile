@@ -201,6 +201,7 @@ RUN mkdir -p files/usr/sbin \
     files/etc/config \
     files/www/luci-static/resources/protocol \
     files/lib/apk/packages \
+    files/lib/upgrade/keep.d \
     scripts
 
 # Copy binary
@@ -227,6 +228,13 @@ RUN cp /tmp/files/tailscale.init files/etc/init.d/tailscale && \
 
 # Conffiles list staged INSIDE files/ at apk's magic path (RFC §4.1/§3).
 RUN echo "/etc/config/tailscale" > files/lib/apk/packages/tailscale.conffiles
+
+# Sysupgrade keep-list: tells OpenWrt's sysupgrade to preserve the whole
+# /etc/tailscale/ dir (tailscaled.state + derpmap.cached.json) across a
+# firmware upgrade -- without this, sysupgrade wipes the node's identity,
+# forcing re-auth (and re-approval of subnet routes) on every upgrade.
+RUN cp /tmp/files/tailscale.keep files/lib/upgrade/keep.d/tailscale && \
+    chmod 644 files/lib/upgrade/keep.d/tailscale
 
 # Maintainer scripts as SIBLINGS of files/ (never under $ADIR). Reuse
 # src/tailscale.{postinst,prerm,postrm} *logic* verbatim, renamed to apk's
@@ -285,6 +293,7 @@ RUN mkdir -p usr/sbin \
     etc/init.d \
     etc/config \
     www/luci-static/resources/protocol \
+    lib/upgrade/keep.d \
     CONTROL
 
 # Copy binary
@@ -298,7 +307,8 @@ RUN cp /tmp/files/tailscale.init etc/init.d/tailscale && \
     cp /tmp/files/tailscale-killswitch-boot.sh usr/sbin/tailscale-killswitch-boot && \
     cp /tmp/files/tailscale-exitnode.sh usr/sbin/tailscale-exitnode && \
     cp /tmp/files/tailscale-setup.sh usr/sbin/tailscale-setup && \
-    cp /tmp/files/luci-protocol-tailscale.js www/luci-static/resources/protocol/tailscale.js
+    cp /tmp/files/luci-protocol-tailscale.js www/luci-static/resources/protocol/tailscale.js && \
+    cp /tmp/files/tailscale.keep lib/upgrade/keep.d/tailscale
 
 RUN chmod 755 etc/init.d/tailscale && \
     chmod 600 etc/config/tailscale && \
@@ -307,7 +317,8 @@ RUN chmod 755 etc/init.d/tailscale && \
     chmod 755 usr/sbin/tailscale-killswitch-boot && \
     chmod 755 usr/sbin/tailscale-exitnode && \
     chmod 755 usr/sbin/tailscale-setup && \
-    chmod 644 www/luci-static/resources/protocol/tailscale.js
+    chmod 644 www/luci-static/resources/protocol/tailscale.js && \
+    chmod 644 lib/upgrade/keep.d/tailscale
 
 # Create control file
 RUN cat > CONTROL/control <<EOF

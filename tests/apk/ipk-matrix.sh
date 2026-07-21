@@ -241,6 +241,20 @@ ${DIFF_OUT}"
     fi
 done
 
+# --- sysupgrade keep-list: /etc/tailscale/ survives a firmware upgrade ---
+# Same fix as the apk stage (tests/apk/mkpkg.sh): the ipk payload must ship
+# /lib/upgrade/keep.d/tailscale so OpenWrt's sysupgrade preserves the whole
+# /etc/tailscale/ dir (tailscaled.state + derpmap.cached.json) across a
+# firmware upgrade, instead of wiping the node's Tailscale identity.
+KEEP_FILE="${WORKDIR}/new/extracted/data/lib/upgrade/keep.d/tailscale"
+if [ -f "${KEEP_FILE}" ]; then
+    log_info "OK: ipk data.tar.gz contains ./lib/upgrade/keep.d/tailscale"
+    KEEP_CONTENT=$(cat "${KEEP_FILE}")
+    assert_eq "keep.d/tailscale content is '/etc/tailscale/'" "/etc/tailscale/" "${KEEP_CONTENT}"
+else
+    log_fail "ipk data.tar.gz missing ./lib/upgrade/keep.d/tailscale (${KEEP_FILE} not found)"
+fi
+
 docker rmi tailscale-ipk-matrix-test-old:latest tailscale-ipk-matrix-test-new:latest >/dev/null 2>&1 || true
 
 harness_finish "tests/apk/ipk-matrix.sh"
