@@ -57,6 +57,10 @@ start_service() {
         local total_ram
         total_ram=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo 2>/dev/null)
         if [ -n "$total_ram" ]; then
+            # mem_limit is still derived/persisted per-tier below (mirrors
+            # tailscale.postinst) but is reserved/not applied to procd --
+            # see the "Apply memory tuning" comment further down and
+            # docs/gomemlimit-field-report.md.
             if [ "$total_ram" -lt 96 ]; then
                 mem_limit='50MiB'
                 gogc='50'
@@ -114,7 +118,27 @@ start_service() {
     fi
 
     # Apply memory tuning
-    [ -n "$mem_limit" ] && procd_set_param env GOMEMLIMIT="$mem_limit"
+    #
+    # GOMEMLIMIT is intentionally NOT applied here, even though $mem_limit
+    # may be non-empty above -- see docs/gomemlimit-field-report.md. Field
+    # testing found that once GOMEMLIMIT genuinely reaches tailscaled (it
+    # previously didn't, see the procd note below) it breaks tailscaled's
+    # data path on low-RAM devices: disco/ping stay up and RSS sits well
+    # under the limit, but TCP connections to local services over the
+    # tunnel are silently dropped. GOGC alone bounds RSS effectively
+    # (~48-68MB observed vs ~90MB uncapped) with no observed connectivity
+    # impact, so it is the only tuning knob applied to procd. `mem_limit`
+    # stays a live UCI option (see tailscale.config) for forward
+    # compatibility but is deliberately unused below -- do not wire it back
+    # into procd_*_param without re-reading the field report.
+    #
+    # GOGC is therefore the only env var this instance sets, so
+    # procd_set_param (which REPLACES procd's env list on every call, unlike
+    # procd_append_param which adds to it) is correct as the sole/first
+    # application. This distinction is exactly what silently dropped
+    # GOMEMLIMIT before it was removed above (Issue 1 in the field report):
+    # if a second env var is ever added here, it MUST use
+    # procd_append_param, or it will silently clobber this one.
     [ -n "$gogc" ] && procd_set_param env GOGC="$gogc"
 
     [ -n "$log_level" ] && procd_append_param command --verbose="$log_level"

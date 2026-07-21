@@ -451,14 +451,24 @@ check_eq "live_init_detected_marked_after_first_boot" "1" "$DETECTED_AFTER"
 
 # =====================================================================
 # Scenario 9: LIVE -- tailscale.init's first-boot re-derivation must APPLY
-# the derived mem_limit/gogc/no_logs to procd on this SAME first start, not
-# just persist them to disk for uci to serve on a later boot (H_STALE
-# finding: config_get right after `uci commit` reads the config_load-time
-# snapshot per real /lib/functions.sh semantics, not disk -- so re-reading
-# via config_get immediately after the commit silently keeps the stale
+# the derived gogc/no_logs to procd on this SAME first start, not just
+# persist them to disk for uci to serve on a later boot (H_STALE finding:
+# config_get right after `uci commit` reads the config_load-time snapshot
+# per real /lib/functions.sh semantics, not disk -- so re-reading via
+# config_get immediately after the commit silently keeps the stale
 # pre-detection ""/""/0 values for the rest of THIS run, meaning a low-RAM
 # device's very first start runs tailscaled unconstrained and verbose,
 # exactly the device this feature exists to protect, until a later reboot).
+#
+# Regression guard (docs/gomemlimit-field-report.md): GOMEMLIMIT must NOT
+# reach procd's env at all, on this or any tier -- field testing found it
+# breaks tailscaled's data path on low-RAM devices (disco/ping stay up, TCP
+# to local services over the tunnel silently drops) even though mem_limit
+# is still derived/persisted to UCI above. GOGC is the only tuning knob
+# that may reach procd. This assertion is intentionally inverted from its
+# original form (which asserted GOMEMLIMIT=50MiB WAS applied) -- it must go
+# RED against the pre-fix tailscale.init (which still applied GOMEMLIMIT)
+# and GREEN after.
 # =====================================================================
 reset_sentinel
 : > "$PROCD_CALLS"
@@ -467,7 +477,7 @@ seed_enabled_tailscale_config /etc/config
 FAKE_MEMTOTAL_MB=64 start_service
 
 PROCD_LOG=$(cat "$PROCD_CALLS" 2>/dev/null || true)
-check_contains "live_init_low_ram_gomemlimit_applied_on_first_boot" "env GOMEMLIMIT=50MiB" "$PROCD_LOG"
+check_not_contains "live_init_low_ram_gomemlimit_not_applied_on_first_boot" "GOMEMLIMIT" "$PROCD_LOG"
 check_contains "live_init_low_ram_gogc_applied_on_first_boot" "env GOGC=50" "$PROCD_LOG"
 check_contains "live_init_low_ram_no_logs_applied_on_first_boot" "no-logs-no-support" "$PROCD_LOG"
 

@@ -366,7 +366,7 @@ tailscale.config.log_level=''      # Verbosity (empty for default)
 tailscale.config.extra_args=''     # Additional tailscaled arguments
 
 # Hardware-detected settings (set by postinst)
-tailscale.hardware.mem_limit=''    # GOMEMLIMIT (e.g., '50MiB')
+tailscale.hardware.mem_limit=''    # Reserved/not applied -- see Troubleshooting below
 tailscale.hardware.gogc=''         # GOGC value (e.g., '50')
 tailscale.hardware.no_logs='0'     # Use --no-logs-no-support
 tailscale.hardware.has_wwan='0'    # Watch WWAN interfaces
@@ -413,6 +413,29 @@ tailscale killswitch disable
 # Then fix Tailscale connection
 tailscale up --ssh
 ```
+
+### Connected (ping/disco works) but Can't Reach Local Services Over the Tunnel
+
+**Symptom:** `tailscale status` shows connected, `tailscale ping <peer>` succeeds
+direct in both directions, `netcheck` is healthy -- but TCP connections to a
+local service over the tunnel (e.g. `ssh root@<tailscale-ip>`) time out from
+every peer.
+
+**Cause:** This looks like a firewall or DNS problem but usually isn't --
+check the killswitch and DNS sections above first, but if both check out,
+suspect the daemon's memory tuning instead. Field testing found that
+applying `GOMEMLIMIT` to `tailscaled` can silently break its data path on
+low-RAM devices in exactly this way (disco/ping stay up while real traffic
+is dropped, even with RSS well under the configured limit). For this
+reason, this package's automatic memory tuning is **GOGC-only by design**
+-- it does not set `GOMEMLIMIT` on `tailscaled`, regardless of the
+(unused/reserved) `tailscale.hardware.mem_limit` UCI option. See
+[`docs/gomemlimit-field-report.md`](gomemlimit-field-report.md) for the full
+investigation.
+
+**Fix:** If you previously set `GOMEMLIMIT` manually (e.g. via
+`extra_args` or an environment override outside this package), remove it.
+Tune memory behavior with `tailscale.hardware.gogc` instead.
 
 ### DNS Not Working
 
