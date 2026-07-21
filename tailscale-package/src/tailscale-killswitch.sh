@@ -97,7 +97,7 @@ verify_rule_order() {
         # fw4 uses zone names in comments, look for patterns like:
         # "accept" appearing before "Killswitch" with lan/wan context
         local before_killswitch
-        before_killswitch=$(echo "$forward_rules" | sed -n '1,/Killswitch/p' | head -n -1)
+        before_killswitch=$(echo "$forward_rules" | sed -n '1,/Killswitch/p' | sed '$d')
 
         # Check for forwarding accepts from lan to wan before our rules
         if echo "$before_killswitch" | grep -qE "lan.*wan.*accept|forward.*lan.*wan.*accept"; then
@@ -218,8 +218,15 @@ configure_router_dns() {
     # Redirect router's dnsmasq to use Tailscale MagicDNS
     echo "Configuring router DNS to use Tailscale MagicDNS..."
 
-    # Backup current DNS servers
-    uci -q get dhcp.@dnsmasq[0].server > "$DNS_BACKUP_FILE" 2>/dev/null || true
+    # Backup current DNS servers -- but only if we don't already have a
+    # backup (mirrors apply_rules' boot-time guard below). A repeat `enable`
+    # without an intervening `disable` must never re-capture the
+    # already-redirected MagicDNS addresses as "the original" DNS: that
+    # would permanently clobber the true original, and a later `disable`
+    # would restore DNS to those dead addresses instead (C3).
+    if [ ! -f "$DNS_BACKUP_FILE" ]; then
+        uci -q get dhcp.@dnsmasq[0].server > "$DNS_BACKUP_FILE" 2>/dev/null || true
+    fi
 
     # Point dnsmasq to Tailscale MagicDNS (both IPv4 and IPv6)
     uci -q delete dhcp.@dnsmasq[0].server
@@ -235,9 +242,25 @@ restore_router_dns() {
 
     if [ -f "$DNS_BACKUP_FILE" ]; then
         uci -q delete dhcp.@dnsmasq[0].server
-        while IFS= read -r server || [ -n "$server" ]; do
-            [ -n "$server" ] && uci add_list dhcp.@dnsmasq[0].server="$server"
-        done < "$DNS_BACKUP_FILE"
+        # uci's own `get` on a multi-value list option joins ALL values
+        # space-separated on a SINGLE line (confirmed against a real
+        # OpenWrt 25.12 rootfs) -- it does NOT print one value per line.
+        # configure_router_dns's `uci -q get ... > $DNS_BACKUP_FILE` backup
+        # therefore captured that single joined line, so restoring must
+        # re-split on whitespace the same way uci joined them, not treat
+        # each FILE LINE as one atomic value -- the old `while read` loop
+        # did exactly that, collapsing N original servers into a single
+        # corrupted list entry containing embedded spaces (a real dnsmasq
+        # will not parse that as multiple servers). `set -f` disables
+        # pathname expansion for the word-splitting below in case a value
+        # ever contained a glob character.
+        if [ -s "$DNS_BACKUP_FILE" ]; then
+            set -f
+            for server in $(cat "$DNS_BACKUP_FILE"); do
+                uci add_list dhcp.@dnsmasq[0].server="$server"
+            done
+            set +f
+        fi
         uci -q delete dhcp.@dnsmasq[0].noresolv
         rm -f "$DNS_BACKUP_FILE"
     else

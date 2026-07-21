@@ -3,48 +3,88 @@
 # Note: This only runs on full removal, not during upgrades
 
 # Centralized path configuration
-TAILSCALE_RUNDIR="/var/run/tailscale"
-TAILSCALE_STATEDIR="/etc/tailscale"
+#
+# IPKG_INSTROOT is set by apk/opkg during an offline install (e.g. an
+# ImageBuilder bake). See tailscale.postinst for the full rule set (RFC
+# docs/rfc-apk-builds.md §4.1): persistent state (uci config, the rc.d
+# symlinks, our own state/run dirs) is redirected under $IPKG_INSTROOT
+# rather than skipped; live-system reload actions are no-op'd under a
+# non-empty root. Unchanged when IPKG_INSTROOT is empty/unset.
+INSTROOT="${IPKG_INSTROOT:-}"
+TAILSCALE_RUNDIR="${INSTROOT}/var/run/tailscale"
+TAILSCALE_STATEDIR="${INSTROOT}/etc/tailscale"
+
+# Run uci against $INSTROOT/etc/config under an offline install, against the
+# live /etc/config otherwise. Single choke point for the redirect.
+uci_r() {
+    if [ -n "$INSTROOT" ]; then
+        uci -c "$INSTROOT/etc/config" "$@"
+    else
+        uci "$@"
+    fi
+}
 
 # Remove init.d symlinks
-rm -f /etc/rc.d/S99tailscale
-rm -f /etc/rc.d/K10tailscale
+rm -f "${INSTROOT}/etc/rc.d/S99tailscale"
+rm -f "${INSTROOT}/etc/rc.d/K10tailscale"
 
-# Remove killswitch blocking rules
-uci -q delete firewall.lan_to_wan_block
-uci -q delete firewall.block_wan_dns
-uci -q delete firewall.allow_ts_dns
+# Remove killswitch blocking rules (all 4 sections created by
+# tailscale-killswitch.sh's apply_blocking_rules; allow_ts_traffic is easy
+# to miss since it's created by the killswitch script, not postinst)
+uci_r -q delete firewall.lan_to_wan_block
+uci_r -q delete firewall.block_wan_dns
+uci_r -q delete firewall.allow_ts_dns
+uci_r -q delete firewall.allow_ts_traffic
 
 # Remove killswitch firewall include
-uci -q delete firewall.tailscale_killswitch
+uci_r -q delete firewall.tailscale_killswitch
 
 # Remove tailscale zone and forwarding rules
-uci -q delete firewall.tailscale_zone
-uci -q delete firewall.lan_ts_forward
-uci -q delete firewall.ts_lan_forward
-uci -q delete firewall.ts_wan_forward
+uci_r -q delete firewall.tailscale_zone
+uci_r -q delete firewall.lan_ts_forward
+uci_r -q delete firewall.ts_lan_forward
+uci_r -q delete firewall.ts_wan_forward
 
 # Remove network interface
-uci -q delete network.tailscale
+uci_r -q delete network.tailscale
 
 # Restore DNS config if killswitch was enabled
+#
+# Same fix as tailscale-killswitch.sh's restore_router_dns: uci's own `get`
+# on a multi-value list option joins ALL values space-separated on a SINGLE
+# line (confirmed against a real OpenWrt 25.12 rootfs), not one value per
+# line -- so the backup file this reads is one joined line, and restoring
+# must re-split it on whitespace the same way uci joined it, not treat each
+# FILE LINE as one atomic value (the old `while read` loop did exactly
+# that, collapsing N original servers into a single corrupted list entry
+# containing embedded spaces). `set -f` disables pathname expansion for
+# the word-splitting below in case a value ever contained a glob character.
 DNS_BACKUP="${TAILSCALE_STATEDIR}/dns_backup"
 if [ -f "$DNS_BACKUP" ]; then
-    uci -q delete dhcp.@dnsmasq[0].server
-    while IFS= read -r server || [ -n "$server" ]; do
-        [ -n "$server" ] && uci add_list dhcp.@dnsmasq[0].server="$server"
-    done < "$DNS_BACKUP"
-    uci -q delete dhcp.@dnsmasq[0].noresolv
+    uci_r -q delete dhcp.@dnsmasq[0].server
+    if [ -s "$DNS_BACKUP" ]; then
+        set -f
+        for server in $(cat "$DNS_BACKUP"); do
+            uci_r add_list dhcp.@dnsmasq[0].server="$server"
+        done
+        set +f
+    fi
+    uci_r -q delete dhcp.@dnsmasq[0].noresolv
     rm -f "$DNS_BACKUP"
-    uci commit dhcp
-    /etc/init.d/dnsmasq restart 2>/dev/null || true
+    uci_r commit dhcp
+    # Live-system action (RFC §4.1 rule 2) -- no daemon to signal in a bake.
+    [ -z "$INSTROOT" ] && { /etc/init.d/dnsmasq restart 2>/dev/null || true; }
 fi
 
 # Commit and reload network/firewall
-uci commit firewall 2>/dev/null || true
-uci commit network 2>/dev/null || true
-/etc/init.d/firewall reload 2>/dev/null || true
-/etc/init.d/network reload 2>/dev/null || true
+uci_r commit firewall 2>/dev/null || true
+uci_r commit network 2>/dev/null || true
+# Live-system actions (RFC §4.1 rule 2) -- no daemon to signal in a bake;
+# a baked image picks up the redirected config on its own at first boot.
+if [ -z "$INSTROOT" ]; then
+    /etc/init.d/firewall reload 2>/dev/null || true
+    /etc/init.d/network reload 2>/dev/null || true
+fi
 
 # Clean up runtime files
 rm -rf "$TAILSCALE_RUNDIR"

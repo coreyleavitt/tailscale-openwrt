@@ -2,12 +2,40 @@
 # Tailscale postinst - configure network, firewall, and hardware optimizations
 
 # Centralized path configuration
-TAILSCALE_RUNDIR="/var/run/tailscale"
-TAILSCALE_STATEDIR="/etc/tailscale"
+#
+# IPKG_INSTROOT is set by apk/opkg during an offline install (e.g. an
+# ImageBuilder bake into a firmware image staging root). Maintainer scripts
+# are NOT chrooted into it -- they run against the build host's real
+# filesystem unless they redirect themselves. Three rules follow (RFC
+# docs/rfc-apk-builds.md §4.1):
+#   1. Root-relative persistent state (uci config, the rc.d enable symlink,
+#      our own state/run dirs) is REDIRECTED under $IPKG_INSTROOT, not
+#      skipped, so a baked image boots correctly configured.
+#   2. Live-system actions (service reload/start) are NO-OPed under a
+#      non-empty root -- there is no running system to signal during a bake.
+#   3. The /proc/meminfo hardware-detection read is SKIPPED under a non-empty
+#      root (it would read the build host's RAM, not the target device's)
+#      and deferred to tailscale.init, which re-derives it once at first
+#      real boot if it was never set.
+# When IPKG_INSTROOT is empty/unset (the live-install case), all of the
+# above is a no-op and behavior is unchanged from before this guard.
+INSTROOT="${IPKG_INSTROOT:-}"
+TAILSCALE_RUNDIR="${INSTROOT}/var/run/tailscale"
+TAILSCALE_STATEDIR="${INSTROOT}/etc/tailscale"
+
+# Run uci against $INSTROOT/etc/config under an offline install, against the
+# live /etc/config otherwise. Single choke point for the redirect (rule 1).
+uci_r() {
+    if [ -n "$INSTROOT" ]; then
+        uci -c "$INSTROOT/etc/config" "$@"
+    else
+        uci "$@"
+    fi
+}
 
 # Helper to run uci commands with error logging
 uci_safe() {
-    if ! uci "$@" 2>/dev/null; then
+    if ! uci_r "$@" 2>/dev/null; then
         logger -t tailscale "postinst: WARNING - uci $* failed"
         return 1
     fi
@@ -26,7 +54,7 @@ chmod 755 "$TAILSCALE_RUNDIR"
 # Create tailscale interface if it doesn't exist (using named section for easy cleanup)
 # Uses proto='none' so netifd observes but doesn't manage the interface.
 # This prevents interference with Tailscale's routing table management.
-if ! uci -q get network.tailscale >/dev/null; then
+if ! uci_r -q get network.tailscale >/dev/null; then
     logger -t tailscale "postinst: Creating tailscale network interface"
     uci_safe set network.tailscale=interface
     uci_safe set network.tailscale.proto='none'
@@ -36,7 +64,7 @@ fi
 
 # --- Firewall Zone Setup ---
 # Create tailscale firewall zone if it doesn't exist (using named section for easy cleanup)
-if ! uci -q get firewall.tailscale_zone >/dev/null; then
+if ! uci_r -q get firewall.tailscale_zone >/dev/null; then
     logger -t tailscale "postinst: Creating tailscale firewall zone and forwarding rules"
 
     # Create the zone
@@ -71,7 +99,7 @@ fi
 # --- Firewall Include for Killswitch ---
 # Register killswitch boot script to run at firewall startup (before network)
 # This ensures killswitch rules are in place from the first packet
-if ! uci -q get firewall.tailscale_killswitch >/dev/null; then
+if ! uci_r -q get firewall.tailscale_killswitch >/dev/null; then
     logger -t tailscale "postinst: Adding killswitch firewall include"
     uci_safe set firewall.tailscale_killswitch=include
     uci_safe set firewall.tailscale_killswitch.type='script'
@@ -80,61 +108,100 @@ if ! uci -q get firewall.tailscale_killswitch >/dev/null; then
     uci_safe commit firewall
 fi
 
-# Reload network and firewall to apply changes
-/etc/init.d/network reload 2>/dev/null || true
-/etc/init.d/firewall reload 2>/dev/null || true
-
-# --- Hardware Detection ---
-# Only auto-detect on first install, preserve user customizations on upgrade
-existing_mem_limit=$(uci -q get tailscale.hardware.mem_limit)
-existing_gogc=$(uci -q get tailscale.hardware.gogc)
-
-# Skip hardware detection if user has customized settings
-if [ -n "$existing_mem_limit" ] || [ -n "$existing_gogc" ]; then
-    logger -t tailscale "postinst: Preserving existing hardware settings (mem_limit=$existing_mem_limit, gogc=$existing_gogc)"
-else
-    # Detect total RAM in MB
-    total_ram=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo)
-
-    # Configure based on available RAM
-    if [ "$total_ram" -lt 96 ]; then
-        # Very low memory (<96MB): aggressive optimization
-        uci_safe set tailscale.hardware.mem_limit='50MiB'
-        uci_safe set tailscale.hardware.gogc='50'
-        uci_safe set tailscale.hardware.no_logs='1'
-    elif [ "$total_ram" -lt 192 ]; then
-        # Low memory (96-192MB): moderate optimization
-        uci_safe set tailscale.hardware.mem_limit='75MiB'
-        uci_safe set tailscale.hardware.gogc=''
-        uci_safe set tailscale.hardware.no_logs='0'
-    else
-        # Normal memory (>192MB): no restrictions
-        uci_safe set tailscale.hardware.mem_limit=''
-        uci_safe set tailscale.hardware.gogc=''
-        uci_safe set tailscale.hardware.no_logs='0'
-    fi
-
-    logger -t tailscale "postinst: ${total_ram}MB RAM detected, auto-configured hardware settings"
+# Reload network and firewall to apply changes. Live systems only (rule 2)
+# -- an offline/install-root build has no running network/firewall to
+# signal; the baked image picks up the redirected config on its own at
+# first real boot.
+if [ -z "$INSTROOT" ]; then
+    /etc/init.d/network reload 2>/dev/null || true
+    /etc/init.d/firewall reload 2>/dev/null || true
 fi
 
-# Detect mobile/LTE interfaces (always update, not user-configurable)
-if ls /sys/class/net/ | grep -qE '^(wwan|usb|lte)'; then
-    uci_safe set tailscale.hardware.has_wwan='1'
+# --- Hardware Detection ---
+# Only auto-detect on first install, preserve user customizations on
+# upgrade. Under an install-root build there is no live RAM to read (rule
+# 3) -- it would read the build host's, not the target device's -- so
+# detection is skipped entirely here and deferred to tailscale.init, which
+# re-derives it once at first real boot if it was never set (mem_limit and
+# gogc still absent from config).
+if [ -n "$INSTROOT" ]; then
+    logger -t tailscale "postinst: install-root build, deferring hardware detection to first boot"
 else
-    uci_safe set tailscale.hardware.has_wwan='0'
+    existing_mem_limit=$(uci_r -q get tailscale.hardware.mem_limit)
+    existing_gogc=$(uci_r -q get tailscale.hardware.gogc)
+
+    # Skip hardware detection if user has customized settings
+    if [ -n "$existing_mem_limit" ] || [ -n "$existing_gogc" ]; then
+        logger -t tailscale "postinst: Preserving existing hardware settings (mem_limit=$existing_mem_limit, gogc=$existing_gogc)"
+    else
+        # Detect total RAM in MB
+        total_ram=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo)
+
+        # Configure based on available RAM
+        if [ "$total_ram" -lt 96 ]; then
+            # Very low memory (<96MB): aggressive optimization
+            uci_safe set tailscale.hardware.mem_limit='50MiB'
+            uci_safe set tailscale.hardware.gogc='50'
+            uci_safe set tailscale.hardware.no_logs='1'
+        elif [ "$total_ram" -lt 192 ]; then
+            # Low memory (96-192MB): moderate optimization
+            uci_safe set tailscale.hardware.mem_limit='75MiB'
+            uci_safe set tailscale.hardware.gogc=''
+            uci_safe set tailscale.hardware.no_logs='0'
+        else
+            # Normal memory (>192MB): no restrictions
+            uci_safe set tailscale.hardware.mem_limit=''
+            uci_safe set tailscale.hardware.gogc=''
+            uci_safe set tailscale.hardware.no_logs='0'
+        fi
+
+        logger -t tailscale "postinst: ${total_ram}MB RAM detected, auto-configured hardware settings"
+    fi
+
+    # Mark detection as having run (live install only) so tailscale.init's
+    # deferred-boot fallback for install-root builds never re-runs it
+    # redundantly against an already-configured live router.
+    uci_safe set tailscale.hardware.detected='1'
+fi
+
+# Detect mobile/LTE interfaces (always update on a live install, not
+# user-configurable). Under an install-root build there is no live network
+# to read (RFC §4.1 rule 3 analog, same reasoning as the mem_limit/gogc RAM
+# read above) -- /sys/class/net here would reflect the BUILD HOST's
+# interfaces, not the target device's, permanently baking a wrong value.
+# Detection is skipped entirely and deferred to tailscale.init, which
+# re-derives it once at first real boot alongside mem_limit/gogc/no_logs
+# (H5).
+if [ -n "$INSTROOT" ]; then
+    logger -t tailscale "postinst: install-root build, deferring wwan detection to first boot"
+else
+    if ls /sys/class/net/ | grep -qE '^(wwan|usb|lte)'; then
+        uci_safe set tailscale.hardware.has_wwan='1'
+    else
+        uci_safe set tailscale.hardware.has_wwan='0'
+    fi
 fi
 
 uci_safe commit tailscale
 
 # Log final configuration
-logger -t tailscale "postinst: mem_limit=$(uci -q get tailscale.hardware.mem_limit), gogc=$(uci -q get tailscale.hardware.gogc), no_logs=$(uci -q get tailscale.hardware.no_logs), has_wwan=$(uci -q get tailscale.hardware.has_wwan)"
+logger -t tailscale "postinst: mem_limit=$(uci_r -q get tailscale.hardware.mem_limit), gogc=$(uci_r -q get tailscale.hardware.gogc), no_logs=$(uci_r -q get tailscale.hardware.no_logs), has_wwan=$(uci_r -q get tailscale.hardware.has_wwan)"
 
 # --- Service Restart on Upgrade ---
-# If service was enabled, ensure init symlinks exist and restart
-if [ "$(uci -q get tailscale.config.enabled)" = "1" ]; then
+# If service was enabled, ensure init symlinks exist so the image boots
+# into the service; only actually (re)start it on a live system (rule 2) --
+# a bake has no running init to signal, and the rc.d symlink alone (rule 1)
+# is what makes the baked image start the service for real at first boot.
+if [ "$(uci_r -q get tailscale.config.enabled)" = "1" ]; then
     logger -t tailscale "postinst: Service enabled, ensuring init symlinks and restarting"
-    /etc/init.d/tailscale enable 2>/dev/null || true
-    /etc/init.d/tailscale start 2>/dev/null || true
+    if [ -n "$INSTROOT" ]; then
+        mkdir -p "$INSTROOT/etc/rc.d"
+        ln -sf ../init.d/tailscale "$INSTROOT/etc/rc.d/S99tailscale"
+        ln -sf ../init.d/tailscale "$INSTROOT/etc/rc.d/K10tailscale"
+    else
+        /etc/init.d/tailscale enable 2>/dev/null || true
+        /etc/init.d/tailscale start 2>/dev/null || true
+    fi
 fi
 
 exit 0

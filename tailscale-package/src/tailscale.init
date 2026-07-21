@@ -32,6 +32,66 @@ start_service() {
     config_get gogc hardware gogc ""
     config_get_bool no_logs hardware no_logs 0
 
+    # postinst skips RAM-based detection during an install-root/baked build
+    # (RFC docs/rfc-apk-builds.md §4.1 rule 3 -- there is no live RAM to
+    # read at bake time, only the build host's) and leaves
+    # hardware.detected='0'. Re-derive it here, once, on the device's own
+    # first real start. A live install always leaves detected='1' (postinst
+    # ran with a real IPKG_INSTROOT-unset environment), so this never
+    # re-runs against an already-configured live router.
+    #
+    # H_STALE (round 3): mem_limit/gogc/no_logs/has_wwan below are assigned
+    # DIRECTLY to the same local shell vars this function later hands to
+    # procd, rather than `uci set`+`uci commit` followed by a config_get
+    # re-read. config_get/config_get_bool read the in-memory snapshot that
+    # config_load populated at the TOP of this function, not disk -- a
+    # config_get called after our own uci commit here would still return
+    # the pre-detection ""/""/0 snapshot values, so a low-RAM device's very
+    # first start would run tailscaled completely unconstrained (no
+    # GOMEMLIMIT, verbose logging) until a later reboot re-runs config_load.
+    # Direct assignment makes this first start itself correct; uci commit
+    # is kept so the values also persist for every subsequent boot.
+    local detected
+    config_get_bool detected hardware detected 0
+    if [ "$detected" -eq 0 ]; then
+        local total_ram
+        total_ram=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo 2>/dev/null)
+        if [ -n "$total_ram" ]; then
+            if [ "$total_ram" -lt 96 ]; then
+                mem_limit='50MiB'
+                gogc='50'
+                no_logs=1
+            elif [ "$total_ram" -lt 192 ]; then
+                mem_limit='75MiB'
+                gogc=''
+                no_logs=0
+            else
+                mem_limit=''
+                gogc=''
+                no_logs=0
+            fi
+            uci set tailscale.hardware.mem_limit="$mem_limit"
+            uci set tailscale.hardware.gogc="$gogc"
+            uci set tailscale.hardware.no_logs="$no_logs"
+            logger -t tailscale "start_service: ${total_ram}MB RAM detected on first boot, auto-configured mem_limit/gogc/no_logs"
+        fi
+
+        # H5/M2 (round 3): has_wwan detection is a SIBLING of the total_ram
+        # check above, not nested inside it, and the detected='1' marker
+        # below is unconditional too -- a /proc/meminfo read failure must
+        # not also suppress has_wwan re-derivation or leave 'detected' at
+        # '0' forever (which would otherwise leave wwan reload triggers
+        # wrong across every boot until meminfo happens to succeed).
+        if ls /sys/class/net/ 2>/dev/null | grep -qE '^(wwan|usb|lte)'; then
+            uci set tailscale.hardware.has_wwan='1'
+        else
+            uci set tailscale.hardware.has_wwan='0'
+        fi
+
+        uci set tailscale.hardware.detected='1'
+        uci commit tailscale
+    fi
+
     # Create directories with appropriate permissions
     mkdir -p "$TAILSCALE_RUNDIR"
     mkdir -p "$TAILSCALE_STATEDIR"
@@ -59,11 +119,15 @@ start_service() {
 
     [ -n "$log_level" ] && procd_append_param command --verbose="$log_level"
 
-    # Handle extra_args safely (word splitting intentional for multiple args)
+    # Handle extra_args safely (word splitting intentional for multiple
+    # args, but NOT glob expansion -- an extra_args value containing *, ?,
+    # or [ must be passed through literally, not expanded against cwd; L10)
     if [ -n "$extra_args" ]; then
+        set -f
         for arg in $extra_args; do
             procd_append_param command "$arg"
         done
+        set +f
     fi
 
     procd_set_param respawn 3600 5 5
@@ -97,10 +161,19 @@ start_service() {
                 sleep 1
             done
 
-            # Write authkey to temp file to avoid exposing it in ps output
-            # Using $$ for unique filename (subshell PID)
-            authkey_file="/tmp/.tailscale_authkey.$$"
-            (umask 077 && echo "$authkey" > "$authkey_file")
+            # Write authkey to temp file to avoid exposing it in ps output.
+            # A predictable PID-based path ($$) in world-writable /tmp is
+            # guessable by a local user who pre-creates it before we write
+            # -- umask only protects newly-created files, not a pre-existing
+            # one at a known path (M6). mktemp picks an unpredictable name
+            # and creates it atomically/exclusively (with 0600 perms,
+            # reinforced here by umask), so there is no window for that.
+            authkey_file=$(umask 077 && mktemp /tmp/.tailscale_authkey.XXXXXX) || {
+                logger -t tailscale "Failed to create temp authkey file"
+                exit 1
+            }
+            trap 'rm -f "$authkey_file"' EXIT
+            echo "$authkey" > "$authkey_file"
 
             # Authenticate with the provided key (file: prefix reads from file)
             logger -t tailscale "Auto-authenticating with authkey"
@@ -111,9 +184,6 @@ start_service() {
             else
                 logger -t tailscale "Authentication failed"
             fi
-
-            # Clean up authkey file
-            rm -f "$authkey_file"
         ) &
     fi
 }
