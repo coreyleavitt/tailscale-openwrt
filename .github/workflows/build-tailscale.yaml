@@ -74,7 +74,15 @@ jobs:
       - name: Select build matrix
         id: select
         run: |
-          echo "arches=$(scripts/select-matrix.sh ${{ github.event_name }})" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          # Capture explicitly (not inside the >>GITHUB_OUTPUT command
+          # substitution, which swallows a script failure and would emit an
+          # empty matrix that silently skips every build job and half-publishes
+          # a keys-only feed). Fail loudly on error or an empty/invalid matrix.
+          arches="$(scripts/select-matrix.sh "${{ github.event_name }}")"
+          echo "${arches}" | jq -e 'type == "array" and length > 0' >/dev/null \
+            || { echo "::error::select-matrix produced an empty or invalid matrix: '${arches}'"; exit 1; }
+          echo "arches=${arches}" >> "$GITHUB_OUTPUT"
 
   # A5a: qemu binfmt registration + foreign-arch exec smoke test. Proves
   # docker/setup-qemu-action's standard registration PLUS the custom
@@ -579,6 +587,12 @@ jobs:
 
           FORCE_ARGS=""
           if [ "${FORCE_PUBLISH}" = "true" ]; then FORCE_ARGS="--force"; fi
+
+          # Fail closed on an empty matrix: without this the loop below runs
+          # zero times and the job deploys a keys-only tree (no packages.adb)
+          # while reporting success -- a vacuous half-publish.
+          ARCH_COUNT=$(echo "${ARCHES_JSON}" | jq -r '.[].name' | grep -c . || true)
+          [ "${ARCH_COUNT}" -ge 1 ] || { echo "::error::no arches to publish (empty matrix) -- refusing to deploy a keys-only feed"; exit 1; }
 
           for arch in $(echo "${ARCHES_JSON}" | jq -r '.[].name'); do
             APK_FILE=$(find "built-apks/apk-${arch}" -name '*.apk' | head -1)
