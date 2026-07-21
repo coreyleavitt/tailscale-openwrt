@@ -2,10 +2,18 @@
 # tests/apk/install.sh
 #
 # Slice A4/A5b test: real install-verification of the built .apk inside the
-# pinned OpenWrt 25.12 rootfs container, for EVERY arch in arches.json (RFC
-# docs/rfc-apk-builds.md §5 "Install (integration)" + §6 slices A4 + A5b).
-# A4 proved the mechanism on aarch64 only; A5b generalizes the same mechanism
-# to all four arches, in its own arch-native rootfs container under qemu.
+# pinned OpenWrt 25.12 rootfs container, for every CORE (tier=="core") arch
+# in arches.json (RFC docs/rfc-apk-builds.md §5 "Install (integration)" + §6
+# slices A4 + A5b). A4 proved the mechanism on aarch64 only; A5b generalizes
+# the same mechanism to all four arches, in its own arch-native rootfs
+# container under qemu.
+#
+# RFC docs/rfc-apk-arch-coverage.md §5.8 slice S1c: arches.json widened from
+# 4 to 35 rows in S1b, 31 of which are gated inert (tier==
+# "extended"/"infeasible", rootfs_url == null -- pinning is deferred to
+# S7a). The no-arg path goes through the same tier=="core" gated view
+# scripts/select-matrix.sh's non-PR branch returns, so it still exercises
+# exactly the 4 real bootable arches, not the full widened table.
 #
 # Asserts, after `apk add`-ing the real built .apk into each arch's
 # container:
@@ -99,6 +107,7 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 REPO_ROOT=$(CDPATH= cd -- "${SCRIPT_DIR}/../.." && pwd)
 PKG_DIR="${REPO_ROOT}/tailscale-package"
 ARCHES_JSON="${REPO_ROOT}/arches.json"
+SELECT_MATRIX="${REPO_ROOT}/scripts/select-matrix.sh"
 CACHE_DIR="${ROOTFS_CACHE_DIR:-${SCRIPT_DIR}/.cache}"
 ONLY_ARCH="${1:-}"
 
@@ -118,6 +127,10 @@ if [ ! -f "${PKG_DIR}/Dockerfile" ]; then
 fi
 if [ ! -f "${ARCHES_JSON}" ]; then
     echo "FAIL: ${ARCHES_JSON} not found" >&2
+    exit 1
+fi
+if [ ! -x "${SELECT_MATRIX}" ]; then
+    echo "FAIL: ${SELECT_MATRIX} not found or not executable" >&2
     exit 1
 fi
 
@@ -382,7 +395,15 @@ install_verify_one() {
 if [ -n "${ONLY_ARCH}" ]; then
     NAMES="${ONLY_ARCH}"
 else
-    NAMES=$(jq -r '.[].name' "${ARCHES_JSON}")
+    # tier=="core" (RFC docs/rfc-apk-arch-coverage.md §5.8, slice S1c):
+    # arches.json widened to 35 rows in S1b, 31 of which are gated inert
+    # (tier=="extended"/"infeasible", rootfs_url == null -- pinning is
+    # deferred to S7a). A bare `.[].name` here would run install_verify_one
+    # against all 35 and spuriously log_fail on every gated-inert row.
+    # Go through the same tier=="core" gated view select-matrix.sh's
+    # non-PR branch returns, so this exercises exactly the 4 real bootable
+    # core arches, same as before the widen.
+    NAMES=$("${SELECT_MATRIX}" workflow_dispatch "${ARCHES_JSON}" | jq -r '.[].name')
 fi
 
 for _arch in ${NAMES}; do

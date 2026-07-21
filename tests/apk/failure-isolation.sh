@@ -261,6 +261,12 @@ result = {
     "calls_probe_script": "probe-feed.sh" in text,
     "calls_notify_alert": "notify-alert.sh" in text,
     "keepalive_step_present": any("keepalive" in n.lower() for n in names),
+    # RFC docs/rfc-apk-arch-coverage.md §5.8 slice S1c: the drift/probe
+    # arch selection used to be `.[0].name` -- order-fragile now that
+    # arches.json is a 35-row table (S1b) with a content-derived, not
+    # positional, row order. It must be canary-keyed instead.
+    "arch_selection_canary_keyed": text.count("select(.canary == true)") >= 2,
+    "arch_selection_no_positional_index": ".[0].name" not in text,
 }
 print(json.dumps(result))
 PYEOF
@@ -272,6 +278,39 @@ assert_eq "check-releases.yaml calls scripts/detect-apk-drift.sh" "true" "$(echo
 assert_eq "check-releases.yaml calls scripts/probe-feed.sh" "true" "$(echo "${CHECK_STRUCT}" | jq -r '.calls_probe_script')"
 assert_eq "check-releases.yaml reuses scripts/notify-alert.sh (same alert channel)" "true" "$(echo "${CHECK_STRUCT}" | jq -r '.calls_notify_alert')"
 assert_eq "check-releases.yaml's existing keepalive step is still present (extend, don't replace)" "true" "$(echo "${CHECK_STRUCT}" | jq -r '.keepalive_step_present')"
+assert_eq "check-releases.yaml's drift+probe arch selection is canary-keyed (both steps)" "true" \
+    "$(echo "${CHECK_STRUCT}" | jq -r '.arch_selection_canary_keyed')"
+assert_eq "check-releases.yaml no longer uses the order-fragile .[0].name selector" "true" \
+    "$(echo "${CHECK_STRUCT}" | jq -r '.arch_selection_no_positional_index')"
+
+echo
+
+# ---------------------------------------------------------------------------
+# canary-keyed selection is order-independent (S1c): a row-order shuffle of
+# arches.json must not change which arch check-releases.yaml's probe/drift
+# steps select. This is the docker-free unit check for the fix -- proves the
+# `select(.canary == true)` jq expression itself (not just its presence in
+# the YAML text) is insensitive to row order, unlike the `.[0].name` it
+# replaced.
+# ---------------------------------------------------------------------------
+echo "=== check-releases probe/drift arch selection is order-independent (canary-keyed) ==="
+
+ARCHES_JSON="${REPO_ROOT}/arches.json"
+SHUFFLED_ARCHES="${WORKDIR}/arches-shuffled.json"
+jq '[.[]] | sort_by(.name) | reverse' "${ARCHES_JSON}" > "${SHUFFLED_ARCHES}"
+
+ORIG_SELECTED=$(jq -r '.[] | select(.canary == true) | .name' "${ARCHES_JSON}")
+SHUFFLED_SELECTED=$(jq -r '.[] | select(.canary == true) | .name' "${SHUFFLED_ARCHES}")
+
+assert_eq "canary selection is exactly mips_24kc on the committed (unshuffled) table" "mips_24kc" "${ORIG_SELECTED}"
+assert_eq "canary selection is UNCHANGED after reversing row order (order-independence)" "${ORIG_SELECTED}" "${SHUFFLED_SELECTED}"
+
+# Contrast with the old, deleted `.[0].name` selector: on the same shuffled
+# table it would select a different arch entirely -- proof this isn't
+# vacuously true because the table happens to still start with mips_24kc.
+OLD_SELECTOR_ON_SHUFFLED=$(jq -r '.[0].name' "${SHUFFLED_ARCHES}")
+assert_eq "regression check: the OLD .[0].name selector WOULD have changed under the same shuffle" "true" \
+    "$([ "${OLD_SELECTOR_ON_SHUFFLED}" != "mips_24kc" ] && echo true || echo false)"
 
 echo
 

@@ -4,8 +4,8 @@
 # Selects the per-arch build matrix from arches.json, event-conditionally
 # (RFC docs/rfc-apk-builds.md §5 "CI cost / emulation policy" + §6 slice A5a):
 #
-#   pull_request        -> cheap PR signal: aarch64 + the MIPS canary only
-#   anything else        -> full matrix (workflow_dispatch, release, ...)
+#   pull_request        -> cheap PR signal: the canary arch(es) only
+#   anything else        -> the `tier=="core"` migration-safety-gated set
 #     (workflow_dispatch is the only event that currently fires
 #     build-tailscale.yaml, per check-releases.yaml)
 #
@@ -14,11 +14,26 @@
 # field -- rootfs_url/rootfs_sha256/container_arch/etc -- without a second
 # lookup.
 #
-# "aarch64" is selected via the container_arch field (=="aarch64"), not by
-# hardcoding the arch name, so this stays correct if arches.json's naming
-# changes. The MIPS canary is selected via the canary field (arches.json's
-# single source of truth for "which arch is the canary" -- currently
-# mips_24kc).
+# **Migration-safety gate (RFC docs/rfc-apk-arch-coverage.md §5.8, slice
+# S1b).** arches.json was widened from 4 to 35 rows (the Appendix's full
+# arch table) in S1b, but the Dockerfile's build stage is still S2's
+# not-yet-landed data-driven rewrite -- until S2/S3/S4 land, every non-legacy
+# arch would silently mis-build as 32-bit MIPS. The `tier` field is the gate:
+# the non-PR branch filters to `tier=="core"` (the 4 historical, hand-proven
+# arches), NOT the full table, so the widened `extended`/`infeasible` rows
+# sit inert (they compile-smoke in S2 but never reach this selector's output
+# until the S5 gate-flip deliberately drops this filter). This is the
+# MINIMAL inert-gate for S1b -- the multi-output contract
+# (ipk_arches/compile_families/publish_arches/verify_families) is deferred
+# to S1.5/S1c/S7a; this branch keeps today's single-array shape.
+#
+# The PR branch keys STRICTLY on `canary == true` (RFC §5.3 round-2
+# P-SEV2/F-SEV2) -- the old `.canary == true or .container_arch ==
+# "aarch64"` OR-clause is deleted. Once A64 grows multiple `aarch64`
+# rows (S1b's widen), that OR-clause would pull ALL of them into every PR
+# emulation leg; canary is the single per-arch field that names exactly
+# which arch(es) are the PR signal, independent of how many share a
+# container_arch.
 #
 # This is the single implementation of the matrix-selection logic: the
 # workflow calls it as a step (so the conditioning isn't reimplemented as an
@@ -40,7 +55,7 @@ if [ ! -f "${ARCHES_JSON}" ]; then
 fi
 
 if [ "${EVENT_NAME}" = "pull_request" ]; then
-    jq -c '[.[] | select(.canary == true or .container_arch == "aarch64")]' "${ARCHES_JSON}"
+    jq -c '[.[] | select(.canary == true)]' "${ARCHES_JSON}"
 else
-    jq -c '.' "${ARCHES_JSON}"
+    jq -c '[.[] | select(.tier == "core")]' "${ARCHES_JSON}"
 fi

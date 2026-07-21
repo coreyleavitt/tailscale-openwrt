@@ -8,18 +8,28 @@
 # register_standard_qemu_binfmt/register_openwrt_mips_binfmt for reuse here) --
 # actually lets a foreign-arch container exec. Two things are asserted:
 #
-#   1. Binfmt + exec: for each of the 4 arches.json entries (or just one, if
-#      given as $1 -- this is how the CI matrix job invokes it per-arch),
-#      `docker run` the pinned rootfs image and assert a trivial foreign
-#      binary execs (`uname -m`) and reports the expected machine. Binfmt
-#      registration is UNCONDITIONAL and reset-first here (unlike rootfs.sh's
-#      lazy self-heal on failure) so this test is a real proof of
-#      registration, not reliant on host state left over from a previous run.
+#   1. Binfmt + exec: for each of the 4 CORE (tier=="core") arches.json
+#      entries (or just one, if given as $1 -- this is how the CI matrix job
+#      invokes it per-arch), `docker run` the pinned rootfs image and assert
+#      a trivial foreign binary execs (`uname -m`) and reports the expected
+#      machine. Binfmt registration is UNCONDITIONAL and reset-first here
+#      (unlike rootfs.sh's lazy self-heal on failure) so this test is a real
+#      proof of registration, not reliant on host state left over from a
+#      previous run.
+#
+#      RFC docs/rfc-apk-arch-coverage.md §5.8 slice S1c: arches.json widened
+#      from 4 to 35 rows in S1b, 31 of which are gated inert (tier==
+#      "extended"/"infeasible", most with rootfs_url/rootfs_sha256 == null --
+#      pinning is deferred to S7a). This exec check must go through the same
+#      tier=="core" gated view scripts/select-matrix.sh's non-PR branch uses
+#      -- iterating the raw table by index would attempt to download/import
+#      a `null` rootfs URL for every gated-inert row.
 #
 #   2. Matrix-selection logic (§5 "CI cost / emulation policy"): asserts
-#      scripts/select-matrix.sh selects {aarch64 arch, MIPS canary} for a
-#      simulated `pull_request` event and the full 4-arch set for any other
-#      event (e.g. `workflow_dispatch`) -- without a live GitHub Actions run.
+#      scripts/select-matrix.sh selects the canary arch (mips_24kc) for a
+#      simulated `pull_request` event and the tier=="core" 4-arch set for
+#      any other event (e.g. `workflow_dispatch`) -- without a live GitHub
+#      Actions run.
 #
 # Reuses rootfs.sh's cache dir (tests/apk/.cache) so a prior rootfs.sh run's
 # downloaded/verified tarballs aren't re-fetched; imports with the same
@@ -92,12 +102,15 @@ expected_uname_m() {
 }
 
 echo "=== per-arch exec check ==="
-COUNT=$(jq 'length' "${ARCHES_JSON}")
+# tier=="core" (RFC §5.8 S1c) -- go through the same gated view
+# select-matrix.sh's non-PR branch returns, not the raw 35-row table.
+CORE_ARCHES=$("${SELECT_MATRIX}" workflow_dispatch "${ARCHES_JSON}")
+COUNT=$(echo "${CORE_ARCHES}" | jq 'length')
 i=0
 while [ "$i" -lt "$COUNT" ]; do
-    NAME=$(jq -r ".[$i].name" "${ARCHES_JSON}")
-    URL=$(jq -r ".[$i].rootfs_url" "${ARCHES_JSON}")
-    PIN=$(jq -r ".[$i].rootfs_sha256" "${ARCHES_JSON}")
+    NAME=$(echo "${CORE_ARCHES}" | jq -r ".[$i].name")
+    URL=$(echo "${CORE_ARCHES}" | jq -r ".[$i].rootfs_url")
+    PIN=$(echo "${CORE_ARCHES}" | jq -r ".[$i].rootfs_sha256")
     i=$((i + 1))
 
     if [ -n "${ONLY_ARCH}" ] && [ "${NAME}" != "${ONLY_ARCH}" ]; then
@@ -144,15 +157,19 @@ echo
 
 echo "=== matrix-selection logic ==="
 
+# RFC §5.8 S1c: PR selection keys strictly on canary==true (mips_24kc only
+# -- the deleted `.canary == true or .container_arch == "aarch64"` OR-clause
+# used to also pull in aarch64_cortex-a53); non-PR selection is gated to the
+# tier=="core" 4-arch set, not the full (now 35-row) table.
 PR_NAMES=$("${SELECT_MATRIX}" pull_request "${ARCHES_JSON}" | jq -c '[.[].name] | sort')
-assert_eq "pull_request matrix" '["aarch64_cortex-a53","mips_24kc"]' "${PR_NAMES}"
+assert_eq "pull_request matrix" '["mips_24kc"]' "${PR_NAMES}"
 
-FULL_NAMES=$(jq -c '[.[].name] | sort' "${ARCHES_JSON}")
+CORE_NAMES='["aarch64_cortex-a53","arm_cortex-a7","mips_24kc","mipsel_24kc"]'
 
 DISPATCH_NAMES=$("${SELECT_MATRIX}" workflow_dispatch "${ARCHES_JSON}" | jq -c '[.[].name] | sort')
-assert_eq "workflow_dispatch matrix" "${FULL_NAMES}" "${DISPATCH_NAMES}"
+assert_eq "workflow_dispatch matrix is the tier==core set (not the full 35-row table)" "${CORE_NAMES}" "${DISPATCH_NAMES}"
 
 RELEASE_NAMES=$("${SELECT_MATRIX}" release "${ARCHES_JSON}" | jq -c '[.[].name] | sort')
-assert_eq "release matrix" "${FULL_NAMES}" "${RELEASE_NAMES}"
+assert_eq "release matrix is the tier==core set (not the full 35-row table)" "${CORE_NAMES}" "${RELEASE_NAMES}"
 
 harness_finish "tests/apk/qemu.sh"

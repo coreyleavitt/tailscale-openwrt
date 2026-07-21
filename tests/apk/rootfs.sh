@@ -1,10 +1,20 @@
 #!/bin/sh
 # tests/apk/rootfs.sh
 #
-# Slice A0 test: for every arch in arches.json, download the pinned OpenWrt
-# 25.12 rootfs, verify its sha256 against the pin (fail loudly on mismatch),
-# `docker import` it to a tagged image, and assert inside the container that
-# `apk` is v3 and record `apk --print-arch`.
+# Slice A0 test: for every CORE (tier=="core") arch in arches.json, download
+# the pinned OpenWrt 25.12 rootfs, verify its sha256 against the pin (fail
+# loudly on mismatch), `docker import` it to a tagged image, and assert
+# inside the container that `apk` is v3 and record `apk --print-arch`.
+#
+# RFC docs/rfc-apk-arch-coverage.md §5.8 slice S1c: arches.json widened from
+# 4 to 35 rows in S1b, 31 of which are gated inert (tier==
+# "extended"/"infeasible", rootfs_url/rootfs_sha256/container_arch == null --
+# pinning is deferred to S7a). Iterating the raw table would spuriously
+# log_fail on every one of those 31 rows (missing rootfs_url/sha256), even
+# though they are DELIBERATELY not yet pinned. This test goes through the
+# same tier=="core" gated view scripts/select-matrix.sh's non-PR branch
+# returns, so it exercises exactly the 4 real bootable arches, same as
+# before the widen.
 #
 # Uses the shared tests/apk/lib.sh harness (established slice A2). Safe to
 # re-run; skips re-download when the cached file already matches the pin.
@@ -28,6 +38,7 @@ set -eu
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 REPO_ROOT=$(CDPATH= cd -- "${SCRIPT_DIR}/../.." && pwd)
 ARCHES_JSON="${REPO_ROOT}/arches.json"
+SELECT_MATRIX="${REPO_ROOT}/scripts/select-matrix.sh"
 CACHE_DIR="${ROOTFS_CACHE_DIR:-${SCRIPT_DIR}/.cache}"
 
 # shellcheck source=tests/apk/lib.sh
@@ -83,21 +94,28 @@ if [ ! -f "${ARCHES_JSON}" ]; then
     echo "FAIL: ${ARCHES_JSON} not found" >&2
     exit 1
 fi
+if [ ! -x "${SELECT_MATRIX}" ]; then
+    echo "FAIL: ${SELECT_MATRIX} not found or not executable" >&2
+    exit 1
+fi
 
 mkdir -p "${CACHE_DIR}"
 
-COUNT=$(jq 'length' "${ARCHES_JSON}")
+# tier=="core" (RFC §5.8 S1c) -- the same gated view select-matrix.sh's
+# non-PR branch returns, not the raw (now 35-row) table.
+CORE_ARCHES=$("${SELECT_MATRIX}" workflow_dispatch "${ARCHES_JSON}")
+COUNT=$(echo "${CORE_ARCHES}" | jq 'length')
 if [ "${COUNT}" -eq 0 ]; then
-    echo "FAIL: arches.json contains no arches" >&2
+    echo "FAIL: no tier==core arches selected from arches.json" >&2
     exit 1
 fi
 
 i=0
 while [ "$i" -lt "$COUNT" ]; do
-    NAME=$(jq -r ".[$i].name" "${ARCHES_JSON}")
-    URL=$(jq -r ".[$i].rootfs_url" "${ARCHES_JSON}")
-    PIN=$(jq -r ".[$i].rootfs_sha256" "${ARCHES_JSON}")
-    EXPECT_CONTAINER_ARCH=$(jq -r ".[$i].container_arch" "${ARCHES_JSON}")
+    NAME=$(echo "${CORE_ARCHES}" | jq -r ".[$i].name")
+    URL=$(echo "${CORE_ARCHES}" | jq -r ".[$i].rootfs_url")
+    PIN=$(echo "${CORE_ARCHES}" | jq -r ".[$i].rootfs_sha256")
+    EXPECT_CONTAINER_ARCH=$(echo "${CORE_ARCHES}" | jq -r ".[$i].container_arch")
     i=$((i + 1))
 
     echo "=== ${NAME} ==="

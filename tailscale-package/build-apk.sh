@@ -102,7 +102,15 @@ build_one() {
 if [ -n "${ARCH}" ]; then
     build_one "${ARCH}"
 else
-    for _a in $(jq -r '.[].name' "${ARCHES_JSON}"); do
+    # tier=="core" (RFC docs/rfc-apk-arch-coverage.md §5.8, slice S1c):
+    # arches.json was widened to 35 rows in S1b (26 "extended" + 5
+    # "infeasible", most with a blank/null build tuple -- pinning is
+    # deferred to S7a). A bare `.[].name` here would iterate all 35 and
+    # attempt to build the infeasible/unproven rows too. Gate to the same
+    # tier=="core" set select-matrix.sh's non-PR branch and republish-feed
+    # use, so this convenience "build everything" path stays consistent
+    # with the migration-safety gate until S5 flips it.
+    for _a in $(jq -r '.[] | select(.tier == "core") | .name' "${ARCHES_JSON}"); do
         build_one "${_a}"
     done
 fi

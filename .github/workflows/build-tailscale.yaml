@@ -1203,7 +1203,13 @@ jobs:
           FORCE_ARGS=""
           if [ "${FORCE_PUBLISH}" = "true" ]; then FORCE_ARGS="--force"; fi
 
-          for arch in $(jq -r '.[].name' arches.json); do
+          # tier=="core" (RFC §5.8, slice S1c): arches.json widened to 35
+          # rows in S1b, 31 of which are gated inert (tier=="extended"/
+          # "infeasible", rootfs_url/container_arch still null -- pinning
+          # is deferred to S7a). Republish must iterate only the published
+          # production arches -- the same set select-matrix.sh's non-PR
+          # branch gates to -- not the full widened table.
+          for arch in $(jq -r '.[] | select(.tier == "core") | .name' arches.json); do
             APK_FILE=$(find republish-apks -maxdepth 1 -name "*-${arch}.apk" | head -1)
             [ -n "${APK_FILE}" ] || { echo "::error::no republish .apk found for ${arch} among the ${{ github.event.inputs.republish_tag }} release assets (pattern *-${arch}.apk)"; exit 1; }
             # De-arch-suffix the release asset's name
@@ -1234,7 +1240,9 @@ jobs:
       - name: Post-publish integrity verify (index-walk, §4.3)
         run: |
           set -eu
-          for arch in $(jq -r '.[].name' arches.json); do
+          # tier=="core" (RFC §5.8, S1c) -- verify only the arches this
+          # republish actually published above, not the full 35-row table.
+          for arch in $(jq -r '.[] | select(.tier == "core") | .name' arches.json); do
             sh scripts/feed-guard.sh verify-tree "pages-root/apk/${arch}" "https://apk.leavitt.dev/apk/${arch}"
           done
 

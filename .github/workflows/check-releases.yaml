@@ -79,13 +79,22 @@ jobs:
       # into scripts/detect-apk-drift.sh (testable locally, see
       # tests/apk/failure-isolation.sh) rather than inlined here, so the
       # decision logic isn't only exercisable via a live cron run.
+      #
+      # ARCH selection (RFC docs/rfc-apk-arch-coverage.md §5.8, slice S1c):
+      # `.[0].name` was order-fragile -- arches.json widened from 4 to 35
+      # rows (S1b) with the mnemonic-id assignment content-derived, not
+      # positional, so `.[0]` is no longer guaranteed to be the historical
+      # battle-tested probe arch. Key strictly on `canary == true` instead
+      # (the same field select-matrix.sh's PR leg keys on) -- this is
+      # exactly one arch (mips_24kc) regardless of row order or how many
+      # rows get added ahead of it.
       - name: Detect apk feed drift (self-heal check)
         if: steps.check.outputs.needs_build == 'false'
         id: drift
         run: |
           set -eu
           TAG="${{ steps.tailscale.outputs.tag }}"
-          ARCH=$(jq -r '.[0].name' arches.json)
+          ARCH=$(jq -r '.[] | select(.canary == true) | .name' arches.json)
           FEED_URL="https://apk.leavitt.dev/apk/${ARCH}/packages.adb"
           set +e
           OUT=$(sh scripts/detect-apk-drift.sh "${TAG}" "${FEED_URL}" 2>&1)
@@ -142,7 +151,8 @@ jobs:
           ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
         run: |
           set +e
-          ARCH=$(jq -r '.[0].name' arches.json)
+          # canary-keyed (RFC §5.8 S1c) -- see the drift-check step above.
+          ARCH=$(jq -r '.[] | select(.canary == true) | .name' arches.json)
           TAG="${{ steps.tailscale.outputs.tag }}"
           OUT=$(sh scripts/probe-feed.sh \
             "https://apk.leavitt.dev/apk/${ARCH}" \
