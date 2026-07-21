@@ -1,0 +1,5 @@
+#!/bin/sh
+# tests/apk/fixtures/logger-stub -- swallow logger(1) calls; there's no
+# syslog in the test container and the maintainer scripts' log lines aren't
+# under test here.
+exit 0

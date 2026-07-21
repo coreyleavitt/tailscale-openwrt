@@ -23,6 +23,24 @@ Pre-built Tailscale packages for OpenWrt routers with automatic network/firewall
 
 ## Quick Start
 
+### Which Install Path?
+
+| OpenWrt release | How to detect | Install path |
+|---|---|---|
+| 25.12+ | `. /etc/openwrt_release; echo $DISTRIB_RELEASE` shows `25.x`, or `apk` exists on PATH | **apk** (signed feed, trusted `apk add`) |
+| 22.03 - 24.10 | `$DISTRIB_RELEASE` shows `22.x`/`23.x`/`24.x`, or `apk` is absent | **ipk** (`opkg install` a downloaded package) |
+| GL.iNet firmware 4.x | `/etc/glversion` exists | **glinet** (binary swap over the stock `gl-sdk4-tailscale` package) |
+
+`scripts/install.sh` runs this detection for you and dispatches to the right
+path automatically:
+
+```bash
+wget -qO- https://raw.githubusercontent.com/coreyleavitt/tailscale-openwrt/master/scripts/install.sh | sh
+```
+
+Force a path with `--path apk|ipk|glinet` if auto-detection picks the wrong
+one, or add `-y` to skip confirmation prompts.
+
 ### Stock OpenWrt
 
 Download from [Releases](https://github.com/coreyleavitt/tailscale-openwrt/releases):
@@ -32,6 +50,33 @@ cd /tmp
 wget https://github.com/coreyleavitt/tailscale-openwrt/releases/latest/download/tailscale_1.94.1_mips_24kc.ipk
 opkg install tailscale_*.ipk
 ```
+
+### OpenWrt 25.12+ (apk)
+
+OpenWrt 25.12 replaced `opkg`/`.ipk` with the `apk` package manager. This
+repo publishes a **signed apk feed** so `apk add tailscale` works with no
+`--allow-untrusted` flag:
+
+```bash
+wget -qO- https://raw.githubusercontent.com/coreyleavitt/tailscale-openwrt/master/scripts/install.sh | sh
+```
+
+Or manually:
+
+```bash
+mkdir -p /etc/apk/keys /etc/apk/repositories.d
+wget -O /etc/apk/keys/tailscale.pem https://apk.leavitt.dev/apk/keys/tailscale.pem
+echo "https://apk.leavitt.dev/apk/<arch>/packages.adb" >> /etc/apk/repositories.d/customfeeds.list
+apk update && apk add tailscale
+```
+
+Replace `<arch>` with one of the four arches above. See the [Installation
+Guide](docs/INSTALL.md#option-3-openwrt-2512-apk-feed) for uninstalling,
+downgrading, and mirroring the feed.
+
+**Note:** the LuCI web UI ([luci-app-tailscale](https://github.com/coreyleavitt/luci-app-tailscale))
+is a separate, ipk-only project. This feed does not ship it -- `apk add
+tailscale` gets the CLI and netifd protocol handler only.
 
 ### GL.iNet Routers (Firmware 4.x)
 
@@ -163,7 +208,8 @@ Output: `packages/tailscale_1.92.3_*.ipk`
 
 ## Requirements
 
-- OpenWrt 22.x, 23.x, or 24.x
+- OpenWrt 22.x-24.10 (ipk path) or OpenWrt 25.12+ (apk path) -- see [Which
+  Install Path?](#which-install-path)
 - Packages: `kmod-tun`, `ca-bundle`, `ip-full`
 
 ## Documentation

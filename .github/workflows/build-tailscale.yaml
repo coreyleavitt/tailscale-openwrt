@@ -10,127 +10,501 @@ on:
         description: 'Package release number (default: 1)'
         required: false
         default: '1'
+      force_publish:
+        description: >-
+          Force apk feed publish even if the new version is not strictly
+          greater than the currently-live version (bypasses the C3
+          monotonicity guard, scripts/feed-guard.sh check-monotonic --force).
+          Only for a deliberate backfill/republish (RFC §4.3/§4.6/§8) -- leave
+          false for a normal release.
+        required: false
+        default: 'false'
+      republish:
+        description: >-
+          C5 republish path (RFC §4.6): when true, SKIP the full ipk+apk
+          rebuild and release entirely, and only re-run feed
+          assemble+sign+publish (the republish-feed job below) against the
+          .apk assets already attached to an EXISTING GitHub release
+          (republish_tag). For retrying after an imprimatur/signing outage,
+          or backfilling apk onto a release that soft-failed apk publish
+          without a full rebuild. Still subject to the C3 monotonicity guard
+          (force_publish=true to deliberately backfill an older version).
+        required: false
+        default: 'false'
+      republish_tag:
+        description: >-
+          Release tag to republish apk assets for (e.g. v1.98.8) -- its
+          already-built .apk release assets are downloaded via `gh release
+          download`, never rebuilt. Required when republish=true; ignored
+          otherwise.
+        required: false
+        default: ''
+  pull_request:
 
 jobs:
-  build-mips:
+  # A5a: selects the qemu-verify build matrix from arches.json,
+  # event-conditionally (RFC docs/rfc-apk-builds.md §5 "CI cost / emulation
+  # policy"): a pull_request gets the cheap PR signal (aarch64 + the MIPS
+  # canary only), any other event (workflow_dispatch today; release later)
+  # gets the full 4-arch set. The selection logic itself lives in
+  # scripts/select-matrix.sh (also exercised directly by
+  # tests/apk/qemu.sh), not as an inline expression here, so it's testable
+  # outside a live Actions run. Purely additive: does not feed the existing
+  # ipk build/release jobs below.
+  # C5: skipped entirely on a `republish: true` dispatch -- republish-feed
+  # (bottom of this file) reads arches.json directly and does not need a
+  # build matrix, since nothing here gets rebuilt on that path (RFC §4.6:
+  # "re-run ONLY feed-assemble+sign+publish ... WITHOUT a full rebuild").
+  # `github.event.inputs.republish` is unset (falsy) for both a normal
+  # workflow_dispatch (input default 'false') and a pull_request event (no
+  # `inputs` at all), so this condition is a no-op for every trigger that
+  # existed before C5 -- purely additive.
+  select-matrix:
+    if: github.event.inputs.republish != 'true'
     runs-on: ubuntu-latest
+    # M11: least-privilege -- checkout only, nothing else.
+    permissions:
+      contents: read
+    outputs:
+      arches: ${{ steps.select.outputs.arches }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select build matrix
+        id: select
+        run: |
+          echo "arches=$(scripts/select-matrix.sh ${{ github.event_name }})" >> "$GITHUB_OUTPUT"
+
+  # A5a: qemu binfmt registration + foreign-arch exec smoke test. Proves
+  # docker/setup-qemu-action's standard registration PLUS the custom
+  # ABIVERSION-wildcarded 32-bit mips/mipsel binfmt_misc entries (root-caused
+  # in A0; stock registration omits 32-bit MIPS and rejects OpenWrt's
+  # EI_ABIVERSION=1 musl-softfloat ELFs) actually let each arch's rootfs
+  # container exec. Runs tests/apk/qemu.sh scoped to a single arch per
+  # matrix job, reusing the same script used for local `/tdd` runs. A5b
+  # wires the real per-arch apk build/install pipeline onto this same
+  # event-conditional matrix.
+  qemu-verify:
+    if: github.event.inputs.republish != 'true'
+    needs: select-matrix
+    runs-on: ubuntu-latest
+    # M11: least-privilege -- checkout only, nothing else.
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: ${{ fromJson(needs.select-matrix.outputs.arches) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU (standard arches)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Register OpenWrt 32-bit MIPS binfmt entries
+        run: |
+          . tests/apk/lib.sh
+          register_openwrt_mips_binfmt
+
+      - name: Exec smoke test (${{ matrix.arch.name }})
+        env:
+          QEMU_SKIP_BINFMT_SETUP: '1'
+        run: sh tests/apk/qemu.sh "${{ matrix.arch.name }}"
+
+  # A5b: the real per-arch apk build + install-verify pipeline (RFC
+  # docs/rfc-apk-builds.md §6 slice A5b), on the same event-conditional
+  # matrix as qemu-verify above (release/dispatch = full 4 arches, PR =
+  # canary + aarch64 only, per §5's emulation-cost policy). Sibling job, not
+  # a step inside qemu-verify -- qemu-verify stays a cheap binfmt/exec smoke
+  # test; this job does the heavier work (a real docker build --target apk
+  # + a real qemu-emulated `apk add` + `tailscaled --version`) via
+  # tests/apk/install.sh scoped to one arch, mirroring how qemu.sh is
+  # invoked per-arch above. Purely additive: does not feed the existing
+  # ipk build/release jobs below.
+  apk-install-verify:
+    if: github.event.inputs.republish != 'true'
+    needs: select-matrix
+    runs-on: ubuntu-latest
+    # M11: least-privilege -- checkout only, nothing else.
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: ${{ fromJson(needs.select-matrix.outputs.arches) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU (standard arches)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Register OpenWrt 32-bit MIPS binfmt entries
+        run: |
+          . tests/apk/lib.sh
+          register_openwrt_mips_binfmt
+
+      - name: Build + install-verify .apk (${{ matrix.arch.name }})
+        run: sh tests/apk/install.sh "${{ matrix.arch.name }}"
+
+  # C1a (RFC docs/rfc-apk-builds.md §6): single parameterized matrix job
+  # replacing the 4 hand-written ipk build jobs (build-mips/build-aarch64/
+  # build-arm7/build-mipsel) that used to live here -- pure refactor, same
+  # `docker build`/Dockerfile ipk-stage invocation per arch, parameterized
+  # only by OPENWRT_ARCH. Reuses the A5a select-matrix job's output so
+  # arches.json (via scripts/select-matrix.sh) is the single source of truth
+  # for the ipk arch list too: a workflow_dispatch event (the only event
+  # that reaches this job with real inputs -- check-releases.yaml is the
+  # sole caller) resolves to the full 4-arch set, identical to what the 4
+  # hand-written jobs always built. Artifact names (`tailscale-<arch.name>`)
+  # are unchanged from before.
+  build-ipk:
+    if: github.event.inputs.republish != 'true'
+    needs: select-matrix
+    runs-on: ubuntu-latest
+    # M11: least-privilege -- checkout + docker build + artifact
+    # upload/download only need contents:read (upload-artifact doesn't need
+    # a write scope of its own).
+    permissions:
+      contents: read
     outputs:
       version: ${{ steps.version.outputs.version }}
       release: ${{ steps.version.outputs.release }}
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: ${{ fromJson(needs.select-matrix.outputs.arches) }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # H4: github.event.inputs.* is null on a non-workflow_dispatch event
+      # (pull_request has no `inputs` at all), so without a fallback this
+      # resolved to an EMPTY string and broke every PR build (docker build
+      # would curl `.../tags/v.tar.gz`). Falls back to the same
+      # 1.92.2/1 pin used as the DEFAULT everywhere else in this repo
+      # (tailscale-package/build.sh, build-apk.sh, every tests/apk/*.sh) --
+      # not a new convention, just applying the existing one here too, so a
+      # PR build still gives the intended cheap real-build signal instead of
+      # failing on an empty version.
       - name: Set version
         id: version
         run: |
-          echo "version=${{ github.event.inputs.tailscale_version }}" >> $GITHUB_OUTPUT
-          echo "release=${{ github.event.inputs.pkg_release }}" >> $GITHUB_OUTPUT
+          VERSION="${{ github.event.inputs.tailscale_version }}"
+          RELEASE="${{ github.event.inputs.pkg_release }}"
+          echo "version=${VERSION:-1.92.2}" >> $GITHUB_OUTPUT
+          echo "release=${RELEASE:-1}" >> $GITHUB_OUTPUT
 
-      - name: Build mips_24kc package
+      - name: Build ${{ matrix.arch.name }} package
         run: |
           cd tailscale-package
           docker build \
             --build-arg TAILSCALE_VERSION=${{ steps.version.outputs.version }} \
             --build-arg PKG_RELEASE=${{ steps.version.outputs.release }} \
-            --build-arg OPENWRT_ARCH=mips_24kc \
-            -t tailscale-mips_24kc:latest \
+            --build-arg OPENWRT_ARCH=${{ matrix.arch.name }} \
+            -t tailscale-${{ matrix.arch.name }}:latest \
             -f Dockerfile .
 
       - name: Extract package and binary
         run: |
           mkdir -p packages
-          docker run --rm tailscale-mips_24kc:latest \
-            cat /tailscale_${{ steps.version.outputs.version }}_mips_24kc.ipk \
-            > packages/tailscale_${{ steps.version.outputs.version }}_mips_24kc.ipk
-          docker run --rm tailscale-mips_24kc:latest \
-            cat /tailscaled_mips_24kc \
-            > packages/tailscaled_${{ steps.version.outputs.version }}_mips_24kc
+          docker run --rm tailscale-${{ matrix.arch.name }}:latest \
+            cat /tailscale_${{ steps.version.outputs.version }}_${{ matrix.arch.name }}.ipk \
+            > packages/tailscale_${{ steps.version.outputs.version }}_${{ matrix.arch.name }}.ipk
+          docker run --rm tailscale-${{ matrix.arch.name }}:latest \
+            cat /tailscaled_${{ matrix.arch.name }} \
+            > packages/tailscaled_${{ steps.version.outputs.version }}_${{ matrix.arch.name }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: tailscale-mips_24kc
+          name: tailscale-${{ matrix.arch.name }}
           path: packages/*
 
-  build-aarch64:
+  # C1b (RFC docs/rfc-apk-builds.md §6): a SEPARATE apk build matrix job,
+  # keyed off the same select-matrix/arches.json source as build-ipk above,
+  # but deliberately a DAG SIBLING of build-ipk -- its own
+  # `needs: [select-matrix]`, never needs-chained through build-ipk and
+  # never a step inside it. This is what lets a later slice (C5) make apk
+  # failures non-blocking to the ipk release purely by adjusting
+  # `if:`/`needs:` wiring on top of this job, with no restructuring (§4.6).
+  # Builds the `apk` Dockerfile stage (A2) per arch, mirroring build-ipk's
+  # extraction style (`docker run --rm ... cat file > out`). Output is
+  # arch-namespaced two ways: the in-image path is `/out/<arch>/...` (A2)
+  # and the uploaded artifact is named `apk-<arch>` with a `packages/<arch>/`
+  # path -- never flattened with `merge-multiple`, since all four arches
+  # build an identically-named `tailscale-<version>-r<release>.apk` (RFC
+  # §3/§4.3: arch goes in the path, not the filename, precisely to avoid
+  # that collision). Purely additive: does not feed the existing ipk
+  # build/release jobs, and does not yet implement signing/assembly (C2),
+  # publishing (C3), release attach (C4), or failure isolation (C5).
+  build-apk:
+    if: github.event.inputs.republish != 'true'
+    needs: select-matrix
     runs-on: ubuntu-latest
+    # M11: least-privilege -- checkout + docker build + artifact upload only.
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: ${{ fromJson(needs.select-matrix.outputs.arches) }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # H4: same empty-on-PR fallback as build-ipk's identical step above.
       - name: Set version
         id: version
         run: |
-          echo "version=${{ github.event.inputs.tailscale_version }}" >> $GITHUB_OUTPUT
-          echo "release=${{ github.event.inputs.pkg_release }}" >> $GITHUB_OUTPUT
+          VERSION="${{ github.event.inputs.tailscale_version }}"
+          RELEASE="${{ github.event.inputs.pkg_release }}"
+          echo "version=${VERSION:-1.92.2}" >> $GITHUB_OUTPUT
+          echo "release=${RELEASE:-1}" >> $GITHUB_OUTPUT
 
-      - name: Build aarch64_cortex-a53 package
+      - name: Build ${{ matrix.arch.name }} .apk
         run: |
           cd tailscale-package
           docker build \
+            --target apk \
             --build-arg TAILSCALE_VERSION=${{ steps.version.outputs.version }} \
             --build-arg PKG_RELEASE=${{ steps.version.outputs.release }} \
-            --build-arg OPENWRT_ARCH=aarch64_cortex-a53 \
-            -t tailscale-aarch64:latest \
+            --build-arg OPENWRT_ARCH=${{ matrix.arch.name }} \
+            -t tailscale-apk-${{ matrix.arch.name }}:latest \
             -f Dockerfile .
 
-      - name: Extract package and binary
+      - name: Extract .apk
         run: |
-          mkdir -p packages
-          docker run --rm tailscale-aarch64:latest \
-            cat /tailscale_${{ steps.version.outputs.version }}_aarch64_cortex-a53.ipk \
-            > packages/tailscale_${{ steps.version.outputs.version }}_aarch64_cortex-a53.ipk
-          docker run --rm tailscale-aarch64:latest \
-            cat /tailscaled_aarch64_cortex-a53 \
-            > packages/tailscaled_${{ steps.version.outputs.version }}_aarch64_cortex-a53
+          mkdir -p packages/${{ matrix.arch.name }}
+          docker run --rm tailscale-apk-${{ matrix.arch.name }}:latest \
+            cat /out/${{ matrix.arch.name }}/tailscale-${{ steps.version.outputs.version }}-r${{ steps.version.outputs.release }}.apk \
+            > packages/${{ matrix.arch.name }}/tailscale-${{ steps.version.outputs.version }}-r${{ steps.version.outputs.release }}.apk
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: tailscale-aarch64_cortex-a53
-          path: packages/*
+          name: apk-${{ matrix.arch.name }}
+          path: packages/${{ matrix.arch.name }}/*
 
-  build-arm7:
+      # C5 (RFC §4.6): loud, release-time alert on an apk-path failure --
+      # only fires if a PRIOR step in this same matrix leg failed. Never
+      # touches the ipk build/release path; guarded to the apk side of the
+      # DAG only. The webhook target is configurable (ALERT_WEBHOOK_URL
+      # secret), never hardcoded here -- see scripts/notify-alert.sh.
+      # H4: this job runs on pull_request too (for the cheap real-build
+      # signal), so an unqualified `if: failure()` would page the ops
+      # webhook on every non-fork PR failure. A PR failure is already
+      # visible in the PR's own check-run UI; the webhook is for
+      # release-path attention, not routine PR review noise.
+      - name: Notify on apk build failure
+        if: failure() && github.event_name != 'pull_request'
+        env:
+          ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
+        run: |
+          scripts/notify-alert.sh "apk build FAILED for ${{ matrix.arch.name }} (run ${{ github.run_id }}, ${{ github.repository }})"
+
+  # C2 (RFC docs/rfc-apk-builds.md §4.2a Design 1, §4.3, §5 "Hermetic C2",
+  # §6 slice C2; exact byte layout: docs/rfc-apk-builds.b0-spike.md) -- the
+  # crux hermetic signing slice. Proves the whole apk-index-signing design
+  # end to end: builds a combined unsigned packages.adb (real aarch64
+  # tailscale .apk + offline stub deps, reusing the A4/A5b stub-repo trick),
+  # signs it via a CI-LOCAL imprimatur image (never sign.leavitt.info -- an
+  # ephemeral `openssl ecparam` test key, generated fresh and discarded at
+  # job end, per RFC §5's "Hermetic C2" note), assembles the ADB_BLOCK_SIG
+  # framing itself (scripts/adb-sign.py, per the B0 spike), and asserts a
+  # real, TRUSTED `apk add tailscale` -- NO --allow-untrusted -- succeeds in
+  # the pinned OpenWrt 25.12 aarch64 rootfs container. Sibling job (needs
+  # only select-matrix/build-apk, never feeds `release`'s needs:), so per
+  # §4.6's isolation rule this cannot block the ipk release path even before
+  # C5 formalizes that with explicit if:/needs: wiring.
+  #
+  # DELIBERATELY SCOPED TO aarch64 ONLY (matches tests/apk/sign-verify.sh):
+  # this slice proves the SIGNING design once; C1b/A5b already prove all
+  # four arches build/install, and C3 will do the real per-arch publish.
+  #
+  # Cross-repo drift (RFC §8 "Cross-repo drift -- deploy *and* build
+  # artifact"): imprimatur's EC signing code (Signer/SigAlgo refactor,
+  # registry.nim, EcP256Algo, POST /sign/:key) is pinned to a specific
+  # commit in the "Checkout imprimatur" step below. imprimatur has no
+  # CI/registry image publish of its own, so this job clones+builds it
+  # inline rather than pulling a prebuilt image (see RFC §6 slice C2). Bump
+  # the pinned SHA whenever imprimatur's signing path changes, and keep it in
+  # sync with what the DEPLOYED sign.leavitt.info actually runs -- this pin
+  # governs only the hermetic CI verifier, not production.
+  # tests/apk/sign-verify.sh, run locally against a real local imprimatur
+  # working tree (IMPRIMATUR_REPO_DIR), proves this design end-to-end and
+  # remains runnable independent of this pin.
+  # C5 (RFC §4.6): `if: !cancelled()` -- deliberately runs this job even if
+  # build-apk FAILED (e.g. a single foreign-arch leg breaking under
+  # fail-fast:false still flips build-apk's own job conclusion to
+  # "failure", which would otherwise SKIP every job that needs it,
+  # including this one -- silently, with no failure() step ever getting a
+  # chance to run). apk-sign-verify is hermetic (it builds its own aarch64
+  # apk locally in tests/apk/sign-verify.sh, see the job body below) so an
+  # unrelated arch's build-apk failure genuinely does not block it -- and
+  # running it "best effort" instead of silently skipping means a REAL
+  # problem here still gets a loud failure()-guarded alert instead of a
+  # quiet grey "skipped" badge nobody notices (the RFC's guiding constraint
+  # #2, §1). Never affects the ipk `release` job either way -- release's
+  # `needs:` never references this job (see `release` below).
+  apk-sign-verify:
+    if: ${{ !cancelled() && github.event.inputs.republish != 'true' }}
+    needs: [select-matrix, build-apk]
     runs-on: ubuntu-latest
+    # M11: least-privilege -- checkout (both repos), docker build only. The
+    # imprimatur checkout below is a public repo read via the default
+    # github.token, which contents:read already covers.
+    permissions:
+      contents: read
     steps:
-      - name: Checkout
+      - name: Checkout tailscale-openwrt
         uses: actions/checkout@v4
 
-      - name: Set version
-        id: version
-        run: |
-          echo "version=${{ github.event.inputs.tailscale_version }}" >> $GITHUB_OUTPUT
-          echo "release=${{ github.event.inputs.pkg_release }}" >> $GITHUB_OUTPUT
+      - name: Set up QEMU (standard arches)
+        uses: docker/setup-qemu-action@v3
 
-      - name: Build arm_cortex-a7 package
+      - name: Register OpenWrt 32-bit MIPS binfmt entries
         run: |
-          cd tailscale-package
-          docker build \
-            --build-arg TAILSCALE_VERSION=${{ steps.version.outputs.version }} \
-            --build-arg PKG_RELEASE=${{ steps.version.outputs.release }} \
-            --build-arg OPENWRT_ARCH=arm_cortex-a7 \
-            -t tailscale-arm7:latest \
-            -f Dockerfile .
+          . tests/apk/lib.sh
+          register_openwrt_mips_binfmt
 
-      - name: Extract package and binary
-        run: |
-          mkdir -p packages
-          docker run --rm tailscale-arm7:latest \
-            cat /tailscale_${{ steps.version.outputs.version }}_arm_cortex-a7.ipk \
-            > packages/tailscale_${{ steps.version.outputs.version }}_arm_cortex-a7.ipk
-          docker run --rm tailscale-arm7:latest \
-            cat /tailscaled_arm_cortex-a7 \
-            > packages/tailscaled_${{ steps.version.outputs.version }}_arm_cortex-a7
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
+      # Pinned to imprimatur's EC signing commit (RFC §6 C2 / §8 cross-repo
+      # drift). Bump when imprimatur's signing path changes, and keep it in
+      # sync with what sign.leavitt.info actually runs.
+      - name: Checkout imprimatur (pinned SHA)
+        uses: actions/checkout@v4
         with:
-          name: tailscale-arm_cortex-a7
-          path: packages/*
+          repository: coreyleavitt/imprimatur
+          ref: 9ed1008b01df68d4d4fd909f0c506a5eb6dc9e57
+          # imprimatur is public -- the default github.token reads it; no PAT needed.
+          path: imprimatur
 
-  build-mipsel:
+      - name: Hermetic C2 -- sign + trusted apk add verification (aarch64)
+        run: sh tests/apk/sign-verify.sh
+        env:
+          IMPRIMATUR_REPO_DIR: ${{ github.workspace }}/imprimatur
+
+      # C5 (RFC §4.6): loud alert on a signing-path failure -- this is the
+      # exact job the ~2-month outage would have failed in (imprimatur
+      # /sign lying with a 503-that-looked-like-200), so it gets its own
+      # explicit failure() step rather than relying solely on GitHub's
+      # default owner-email-on-workflow-failure.
+      # H4: apk-sign-verify also runs on pull_request (needs: build-apk,
+      # which runs on PR) -- same PR-webhook-spam fix as build-apk's
+      # identical guard above.
+      - name: Notify on apk signing failure
+        if: failure() && github.event_name != 'pull_request'
+        env:
+          ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
+        run: |
+          scripts/notify-alert.sh "apk-sign-verify FAILED (run ${{ github.run_id }}, ${{ github.repository }}) -- imprimatur signing/verification path is broken"
+
+  # C3 (RFC docs/rfc-apk-builds.md §4.3, §6 slice C3): assembles the signed
+  # apk feed tree (apk/<arch>/{packages.adb,*.apk} + apk/keys/tailscale.pem)
+  # and deploys it to GitHub Pages behind the apk.leavitt.dev custom domain
+  # (O4; enabling Pages/DNS/perms is the C0 human gate, not this job). A
+  # SINGLE job, not a matrix -- unlike build-ipk/build-apk where each arch is
+  # independent, publish must be ONE atomic deployment covering every arch
+  # (§4.3: "Publish index + all referenced packages as a single deployment")
+  # -- a matrix job would need its own merge/download step to reassemble
+  # before the one upload-pages-artifact call anyway, so a plain per-arch
+  # bash loop inside one job is the simpler, more directly atomic shape.
+  #
+  # gated to workflow_dispatch only (not pull_request) -- unlike
+  # build-ipk/build-apk/apk-sign-verify (which build/verify harmlessly on a
+  # PR even with blank version inputs), this job has REAL external side
+  # effects (a production Pages deploy, a POST to sign.leavitt.info) that
+  # must never fire from a PR run.
+  #
+  # needs apk-sign-verify (C2's hermetic aarch64 proof), not just
+  # build-apk -- a cheap belt-and-suspenders gate: if the signing DESIGN
+  # itself is broken, catch that hermetically before spending a real
+  # sign.leavitt.info round-trip + a real Pages deploy on all 4 arches. This
+  # does not touch §4.6 isolation (that rule protects the ipk `release` job
+  # from apk failures; publish-feed and apk-sign-verify are both on the apk
+  # side of the DAG, so depending on each other is fine).
+  #
+  # Least-privilege (§4.3): ONLY pages:write/id-token:write -- no
+  # contents:write, no attestations:write (those are C4's separate
+  # release-attach job).
+  # concurrency: group: apk-feed-publish, cancel-in-progress: false so a
+  # re-dispatched run can never interleave with an in-flight one and leave
+  # packages.adb referencing a half-uploaded tree (§4.3 "Atomic publish +
+  # concurrency").
+  #
+  # Per-arch pipeline (mirrors C2's Design-1 signing, against the REAL
+  # sign.leavitt.info this time -- C2 itself stays hermetic/test-key-only
+  # and does not touch production):
+  #   1. apk mkndx --compression none  -> unsigned per-arch index (single
+  #      package -- the production feed does not ship the CI-only stub deps
+  #      C2's hermetic test used to get apk to accept the transaction).
+  #   2. scripts/adb-sign.py preimage  -> 86-byte pre-image (B0 spike)
+  #   3. POST to sign.leavitt.info/sign/ec -> DER signature
+  #   4. scripts/adb-sign.py assemble  -> signed packages.adb
+  #   5. scripts/feed-guard.sh check-monotonic -- refuse a signed downgrade
+  #      unless force_publish is set (§4.3/§8)
+  #   6. scripts/feed-guard.sh plan-retention -- compute the last-N blob set
+  #      to keep, carrying forward any prior blob not already produced by
+  #      this run from the still-live tree (GH Pages replaces the WHOLE
+  #      tree on deploy, so a blob dropped here would 404 a client holding a
+  #      briefly-stale cached index, per §4.3).
+  # Then, once every arch's tree is assembled locally: upload-pages-artifact
+  # + deploy-pages (the one atomic deployment), followed by
+  # scripts/feed-guard.sh verify-tree per arch against the just-deployed
+  # live URL as an immediate self-check -- §4.3's own "Test (C3)" bullet,
+  # promoted here from test-only to a real post-deploy gate since it is
+  # cheap and catches CDN propagation skew the moment it happens rather than
+  # waiting for C5's (not-yet-implemented) daily cron to notice.
+  #
+  # Differentiated Cache-Control (§4.3) -- FINDING, not a real
+  # implementation: GitHub Pages has NO support for per-path custom response
+  # headers (no Netlify/Cloudflare-Pages-style `_headers` file, no repo
+  # setting -- verified via GitHub's own community discussions; every asset
+  # gets Pages' fixed CDN (Fastly) caching heuristic regardless of file
+  # type). This is a real, documented Pages limitation, not something this
+  # job can configure around. "Best available", per the task's own
+  # discipline (document a limitation rather than fake it):
+  #   (a) it is NOT a correctness/trust gap -- the monotonicity guard + the
+  #       last-N retention above are what actually protect a
+  #       stale-cached-index client from a downgrade or a hard 404, and
+  #       neither depends on Cache-Control. A sub-optimal cache TTL on the
+  #       immutable *.apk blobs is a propagation-SPEED cost, not a
+  #       correctness one.
+  #   (b) the tree still ships a standards-shaped `_headers` file
+  #       (short/no-cache for packages.adb, long/immutable for *.apk) as
+  #       dormant, forward-compatible metadata -- inert on Pages today, but
+  #       exactly what a `_headers`-aware mirror (RFC §4.4 "Mirroring this
+  #       feed", e.g. Cloudflare Pages/Netlify) would need, at zero cost to
+  #       write now.
+  #   (c) fronting Pages with a CDN proxy that DOES honor custom headers
+  #       (e.g. Cloudflare) is the documented real fix if propagation speed
+  #       ever becomes a practical problem -- a new infra/DNS decision,
+  #       explicitly out of scope for this slice.
+  # C5: `if: !cancelled()` for the same reason as apk-sign-verify above --
+  # runs best-effort even if build-apk/apk-sign-verify failed, rather than
+  # silently skipping, so a real problem surfaces via this job's own
+  # failure()-guarded alert step below instead of a quiet "skipped" badge.
+  # `github.event.inputs.republish != 'true'` excludes the republish
+  # dispatch path -- that path is served entirely by the separate
+  # republish-feed job below (which sources its .apk inputs from an
+  # existing release instead of this run's build-apk artifacts), so this
+  # job staying byte-equivalent to its pre-C5 normal-publish behavior is
+  # what "additive, not a rewrite" means here.
+  publish-feed:
+    if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && github.event.inputs.republish != 'true' }}
+    needs: [select-matrix, build-apk, apk-sign-verify]
     runs-on: ubuntu-latest
+    concurrency:
+      group: apk-feed-publish
+      cancel-in-progress: false
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -138,37 +512,127 @@ jobs:
       - name: Set version
         id: version
         run: |
-          echo "version=${{ github.event.inputs.tailscale_version }}" >> $GITHUB_OUTPUT
-          echo "release=${{ github.event.inputs.pkg_release }}" >> $GITHUB_OUTPUT
+          echo "version=${{ github.event.inputs.tailscale_version }}" >> "$GITHUB_OUTPUT"
+          echo "release=${{ github.event.inputs.pkg_release }}" >> "$GITHUB_OUTPUT"
 
-      - name: Build mipsel_24kc package
-        run: |
-          cd tailscale-package
-          docker build \
-            --build-arg TAILSCALE_VERSION=${{ steps.version.outputs.version }} \
-            --build-arg PKG_RELEASE=${{ steps.version.outputs.release }} \
-            --build-arg OPENWRT_ARCH=mipsel_24kc \
-            -t tailscale-mipsel:latest \
-            -f Dockerfile .
-
-      - name: Extract package and binary
-        run: |
-          mkdir -p packages
-          docker run --rm tailscale-mipsel:latest \
-            cat /tailscale_${{ steps.version.outputs.version }}_mipsel_24kc.ipk \
-            > packages/tailscale_${{ steps.version.outputs.version }}_mipsel_24kc.ipk
-          docker run --rm tailscale-mipsel:latest \
-            cat /tailscaled_mipsel_24kc \
-            > packages/tailscaled_${{ steps.version.outputs.version }}_mipsel_24kc
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
+      - name: Download all apk-* artifacts
+        uses: actions/download-artifact@v4
         with:
-          name: tailscale-mipsel_24kc
-          path: packages/*
+          pattern: apk-*
+          path: built-apks
 
+      # TODO(B4 human gate, RFC §4.2d): apk-signing.pem does not exist in
+      # this repo yet -- B4 must generate the production EC keypair via
+      # imprimatur's deploy and commit the PUBLIC half here (mirrors
+      # signing.pub's existing usign convention). This step fails loudly and
+      # deliberately until then -- exactly like apk-sign-verify's
+      # placeholder-SHA imprimatur checkout above -- an absent production
+      # key must never look like "nothing to publish", it must fail loud
+      # (RFC guiding constraint #2, §1).
+      - name: Check production EC pubkey is committed
+        run: |
+          test -f apk-signing.pem || {
+            echo "::error::apk-signing.pem not found at repo root -- B4 (deploy imprimatur) must commit the production EC public key before publish-feed can sign anything real. See RFC §4.2d. This failure is expected until B4 lands and does not block the ipk release (see §4.6 isolation)."
+            exit 1
+          }
+
+      - name: Extract pinned apk-tools binary
+        run: |
+          . tests/apk/lib.sh
+          extract_apk_tools_binary "${RUNNER_TEMP}/apk-bin" tailscale-package
+          echo "${RUNNER_TEMP}/apk-bin" >> "$GITHUB_PATH"
+
+      # sign.leavitt.info is behind Traefik's tailscale-only middleware, so the
+      # runner must join the tailnet before POSTing the pre-image to /sign/ec
+      # (same pattern the ipk `release` job uses for usign signing). apk.leavitt.dev
+      # (the published feed the monotonicity guard reads) is public Pages and needs
+      # no tailnet -- only the signer round-trip does.
+      - name: Connect to Tailscale
+        uses: tailscale/github-action@v4
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          audience: ${{ secrets.TS_AUDIENCE }}
+          tags: tag:ci
+
+      # H6: the per-arch assemble+sign+guard+retain pipeline is factored
+      # into scripts/publish-arch.sh (shared with republish-feed below) --
+      # was previously duplicated byte-for-byte between the two jobs, a
+      # drift risk. H7's verify-before-publish hard gate and H3's imprimatur
+      # bearer-token auth both live inside that shared script now, so both
+      # jobs get them for free.
+      #
+      # H3: IMPRIMATUR_AUTH_TOKEN is a NEW repo secret -- a human deploy step
+      # (create it once imprimatur's auth-token support is deployed to
+      # sign.leavitt.info). Backward-compatible: empty/unset here sends a
+      # harmless empty Bearer header, which imprimatur ignores until its own
+      # env enables auth.
+      - name: Assemble + sign + guard + retain each arch
+        env:
+          FORCE_PUBLISH: ${{ github.event.inputs.force_publish }}
+          ARCHES_JSON: ${{ needs.select-matrix.outputs.arches }}
+          IMPRIMATUR_AUTH_TOKEN: ${{ secrets.IMPRIMATUR_AUTH_TOKEN }}
+        run: |
+          set -eu
+          PAGES_ROOT="${PWD}/pages-root"
+          mkdir -p "${PAGES_ROOT}/apk/keys"
+          cp apk-signing.pem "${PAGES_ROOT}/apk/keys/tailscale.pem"
+
+          FORCE_ARGS=""
+          if [ "${FORCE_PUBLISH}" = "true" ]; then FORCE_ARGS="--force"; fi
+
+          for arch in $(echo "${ARCHES_JSON}" | jq -r '.[].name'); do
+            APK_FILE=$(find "built-apks/apk-${arch}" -name '*.apk' | head -1)
+            [ -n "${APK_FILE}" ] || { echo "::error::no built .apk found for ${arch} under built-apks/apk-${arch}"; exit 1; }
+            sh scripts/publish-arch.sh "${arch}" "${APK_FILE}" "$(basename "${APK_FILE}")" "${PAGES_ROOT}" ${FORCE_ARGS}
+          done
+
+          # Dormant on GitHub Pages today (see the job-level comment above) --
+          # kept for a future _headers-aware mirror.
+          cat > "${PAGES_ROOT}/_headers" <<'HEADERS_EOF'
+          /apk/*/packages.adb
+            Cache-Control: no-cache
+          /apk/*/*.apk
+            Cache-Control: public, max-age=31536000, immutable
+          HEADERS_EOF
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: pages-root
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+      - name: Post-publish integrity verify (index-walk, §4.3)
+        env:
+          ARCHES_JSON: ${{ needs.select-matrix.outputs.arches }}
+        run: |
+          set -eu
+          for arch in $(echo "${ARCHES_JSON}" | jq -r '.[].name'); do
+            sh scripts/feed-guard.sh verify-tree "pages-root/apk/${arch}" "https://apk.leavitt.dev/apk/${arch}"
+          done
+
+      # C5 (RFC §4.6): loud alert on a publish-path failure (signing
+      # round-trip, monotonicity rejection, Pages deploy, or the
+      # post-publish index-walk above).
+      - name: Notify on apk feed publish failure
+        if: failure()
+        env:
+          ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
+        run: |
+          scripts/notify-alert.sh "publish-feed FAILED (run ${{ github.run_id }}, ${{ github.repository }}) -- apk feed may be stale or unpublished for this release"
+
+  # H4: this job previously had NO `if:` guard at all -- its PR-isolation
+  # was purely incidental (it happened to not run on a PR only because
+  # build-ipk's version inputs were empty and the docker build failed
+  # first). With the H4 version-fallback fix above making build-ipk succeed
+  # on a PR, this job would otherwise ALSO run on every PR and create a real
+  # GitHub release. Explicit workflow_dispatch-only gate, mirroring
+  # publish-feed/republish-feed's existing event_name checks.
   release:
-    needs: [build-mips, build-aarch64, build-arm7, build-mipsel]
+    if: github.event_name == 'workflow_dispatch'
+    needs: [build-ipk]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -178,9 +642,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Download all artifacts
+      # C2 fix: scoped to the ipk artifact name prefix ONLY
+      # (build-ipk uploads `tailscale-${{ matrix.arch.name }}`, C1b's sibling
+      # build-apk uploads the disjoint `apk-${{ matrix.arch.name }}` prefix
+      # -- see build-ipk/build-apk above). Without a `pattern:`,
+      # download-artifact@v4 fetches EVERY artifact in the run regardless of
+      # `needs:`, so a sibling build-apk leg's bare-named
+      # `tailscale-<ver>-r<rel>.apk` could race in here and, via an
+      # unscoped `files:` glob below, get attached to the ipk release.
+      - name: Download ipk artifacts only
         uses: actions/download-artifact@v4
         with:
+          pattern: 'tailscale-*'
           path: packages
           merge-multiple: true
 
@@ -191,8 +664,27 @@ jobs:
           audience: ${{ secrets.TS_AUDIENCE }}
           tags: tag:ci
 
+      # H3: send the imprimatur bearer token (new IMPRIMATUR_AUTH_TOKEN repo
+      # secret -- human deploy step, see the same note on publish-feed's
+      # equivalent step above). Backward-compatible: empty/unset sends a
+      # harmless empty Bearer header until imprimatur's own auth is enabled.
+      #
+      # FIX3 (round-3 code review): the token used to be interpolated
+      # straight into curl's argv (`-H "Authorization: Bearer ${TOKEN}"`),
+      # which is visible in cleartext (e.g. via `ps`) for the life of that
+      # curl process. Written to a 0600 tempfile instead and passed via
+      # curl's `-H @<file>` form, which reads the header content from the
+      # file rather than taking it as a command argument. The tempfile is
+      # removed on exit via trap regardless of how the step ends.
       - name: Sign packages
+        env:
+          IMPRIMATUR_AUTH_TOKEN: ${{ secrets.IMPRIMATUR_AUTH_TOKEN }}
         run: |
+          AUTH_HEADER_FILE=$(mktemp)
+          chmod 600 "${AUTH_HEADER_FILE}"
+          printf 'Authorization: Bearer %s\n' "${IMPRIMATUR_AUTH_TOKEN}" > "${AUTH_HEADER_FILE}"
+          trap 'rm -f "${AUTH_HEADER_FILE}"' EXIT
+
           for ipk in packages/*.ipk; do
             echo "Signing $ipk..."
             # Build JSON request using file operations to avoid argument length limits
@@ -204,6 +696,7 @@ jobs:
               echo "  Attempt $attempt..."
               if RESPONSE=$(curl -s --fail-with-body -X POST https://sign.leavitt.info/sign/usign \
                 -H "Content-Type: application/json" \
+                -H "@${AUTH_HEADER_FILE}" \
                 -d @/tmp/request.json 2>&1); then
                 SIGNATURE=$(echo "$RESPONSE" | jq -r .signature)
                 if [ -n "$SIGNATURE" ] && [ "$SIGNATURE" != "null" ]; then
@@ -229,6 +722,56 @@ jobs:
           cd packages
           sha256sum *.ipk tailscaled_* > SHA256SUMS
 
+      # FIX2 (round-3 code review, GL.iNet on-device integrity -- PRODUCE
+      # side): SHA256SUMS was generated above but never signed, so the
+      # on-device GL.iNet installer path (the CONSUME side, a separate
+      # batch) has nothing to trust it against -- a checksums file that
+      # protects .ipk integrity but is itself unauthenticated is circular.
+      # usign-signs packages/SHA256SUMS the same way each individual .ipk is
+      # signed above (same imprimatur /sign/usign endpoint, same
+      # request/response envelope, same 0600-tempfile bearer-header
+      # technique per FIX3), producing a detached packages/SHA256SUMS.sig
+      # that on-device `usign -V -m SHA256SUMS -p <pinned pubkey> -x
+      # SHA256SUMS.sig` can verify -- byte-for-byte the same signature
+      # format the existing per-.ipk `.ipk.sig` flow already produces, since
+      # it is the identical signing call against a different input file.
+      - name: Sign checksums
+        env:
+          IMPRIMATUR_AUTH_TOKEN: ${{ secrets.IMPRIMATUR_AUTH_TOKEN }}
+        run: |
+          AUTH_HEADER_FILE=$(mktemp)
+          chmod 600 "${AUTH_HEADER_FILE}"
+          printf 'Authorization: Bearer %s\n' "${IMPRIMATUR_AUTH_TOKEN}" > "${AUTH_HEADER_FILE}"
+          trap 'rm -f "${AUTH_HEADER_FILE}"' EXIT
+
+          SUMS="packages/SHA256SUMS"
+          echo "Signing ${SUMS}..."
+          echo -n '{"message": "' > /tmp/sums-request.json
+          base64 -w0 "${SUMS}" >> /tmp/sums-request.json
+          echo -n '"}' >> /tmp/sums-request.json
+          for attempt in 1 2 3; do
+            echo "  Attempt $attempt..."
+            if RESPONSE=$(curl -s --fail-with-body -X POST https://sign.leavitt.info/sign/usign \
+              -H "Content-Type: application/json" \
+              -H "@${AUTH_HEADER_FILE}" \
+              -d @/tmp/sums-request.json 2>&1); then
+              SIGNATURE=$(echo "$RESPONSE" | jq -r .signature)
+              if [ -n "$SIGNATURE" ] && [ "$SIGNATURE" != "null" ]; then
+                echo "$SIGNATURE" | base64 -d > "${SUMS}.sig"
+                if [ -s "${SUMS}.sig" ]; then
+                  echo "  Created ${SUMS}.sig ($(stat -c%s "${SUMS}.sig") bytes)"
+                  break
+                fi
+              fi
+            fi
+            echo "  Failed, response: $RESPONSE"
+            [ "$attempt" -lt 3 ] && sleep 5
+          done
+          if [ ! -s "${SUMS}.sig" ]; then
+            echo "ERROR: Failed to sign ${SUMS} after 3 attempts"
+            exit 1
+          fi
+
       - name: Generate SBOM
         uses: anchore/sbom-action@v0
         with:
@@ -244,8 +787,378 @@ jobs:
       - name: Create or Update Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ needs.build-mips.outputs.version }}
-          name: v${{ needs.build-mips.outputs.version }}
-          files: packages/*
-          generate_release_notes: ${{ needs.build-mips.outputs.release == '1' }}
+          tag_name: v${{ needs.build-ipk.outputs.version }}
+          name: v${{ needs.build-ipk.outputs.version }}
+          # C2 belt-and-suspenders: explicitly scoped to exactly the assets
+          # this job itself owns/produces (downloaded ipk artifacts +
+          # locally-generated signatures/checksums/SBOM) -- never a blanket
+          # `packages/*`, which would also sweep in a same-directory apk
+          # artifact if the C2 download-scoping above were ever weakened.
+          files: |
+            packages/*.ipk
+            packages/*.ipk.sig
+            packages/tailscaled_*
+            packages/SHA256SUMS
+            packages/SHA256SUMS.sig
+            packages/sbom.spdx.json
+          generate_release_notes: ${{ needs.build-ipk.outputs.release == '1' }}
           make_latest: "legacy"
+
+  # C4 (RFC docs/rfc-apk-builds.md §4.3, §6 slice C4): attaches the loose
+  # .apk assets + the EC public key (apk-signing.pem) to the SAME GitHub
+  # release the `release` job (ipk) creates -- for the documented
+  # --allow-untrusted / offline-install path and the downgrade procedure
+  # (§4.7) -- and extends SHA256SUMS/SBOM/provenance-attestation to cover
+  # them.
+  #
+  # DELIBERATELY A SEPARATE JOB from `release` (not a step inside it, not
+  # merged with it): §4.3's own "keep this such that a later slice can make
+  # it non-blocking to the ipk release" requirement is only satisfiable
+  # this way -- if apk-asset-attach were a step inside `release`, an apk
+  # failure would inherently fail the ipk release too (same job, same
+  # success/failure), exactly the coupling §4.6 forbids. C4 itself does
+  # NOT add the `if: !cancelled()` isolation wiring that would make this
+  # job's failure non-blocking to a HYPOTHETICAL downstream consumer --
+  # there isn't one (this is the last job in the chain) -- what C4 DOES
+  # guarantee is that a failure HERE can never reach back and fail
+  # `release` (needs: is one-directional; `release` does not need this
+  # job). This job itself stays a normal hard-fail-on-error job for now;
+  # C5 is what adds cron self-heal / alerting on top.
+  #
+  # `needs: [release, ...]` (not just build-apk) is deliberate: there is
+  # nothing to attach apk assets TO until the ipk release exists, and
+  # sequencing this strictly after `release` avoids a race between the two
+  # independent `softprops/action-gh-release` calls upserting the same tag
+  # (§4.6's documented "two calls against the same tag" pattern).
+  #
+  # Also deliberately separate from `publish-feed` (C3): that job is
+  # Pages-scoped (pages:write/id-token:write only); this job is
+  # contents-scoped (contents:write/attestations:write/id-token:write) --
+  # folding the two together would violate §4.3's "CI token least-
+  # privilege" split (one token accumulating both a Pages-deploy capability
+  # and a release-write capability). softprops/action-gh-release overwrites
+  # any already-uploaded asset with the same filename on a re-upload, which
+  # is how this job's combined ipk+apk SHA256SUMS/sbom.spdx.json SUPERSEDE
+  # `release`'s ipk-only versions -- both are recomputed by re-hashing/
+  # re-scanning the same underlying ipk files, so the ipk lines/entries are
+  # byte-identical to what `release` alone would have produced (ipk
+  # behavior stays unchanged, only extended). The .ipk/tailscaled_* files
+  # themselves are NOT re-uploaded here (only SHA256SUMS/sbom.spdx.json are
+  # superseded, plus the new .apk/.pem assets are added) -- `release`
+  # remains the sole owner of the actual ipk release files.
+  #
+  # Arch-namespacing (RFC §3/§4.3 finding, reconfirmed by C1b): all four
+  # arches build an IDENTICALLY NAMED tailscale-<version>-r<release>.apk
+  # (arch lives in the build OUTPUT PATH, not the filename -- see
+  # build-apk above). As loose per-arch release assets they WOULD collide
+  # if uploaded as-is, so each is renamed here to embed the arch, e.g.
+  # tailscale-1.92.2-r1-aarch64_cortex-a53.apk.
+  #
+  # Attest subject-path -- "confirm empirically" (C4 task note): per
+  # actions/attest's own docs, `subject-path` accepts a list of glob
+  # patterns (comma- or newline-delimited) and a SINGLE glob (e.g.
+  # `packages/*`) CAN span multiple extensions -- so in principle one glob
+  # covering both .ipk and .apk works. It is NOT used here, for two
+  # reasons: (1) `packages/*` in the `release` job would also sweep in
+  # SHA256SUMS/sbom.spdx.json themselves (both already exist in that same
+  # dir by the time attest runs) -- attesting build provenance of the
+  # checksum/SBOM files themselves is not meaningful and was never in
+  # scope for the original ipk-only step; (2) more fundamentally, the apk
+  # assets live in an entirely different JOB (this one) from the ipk
+  # assets (`release`) BY DESIGN (the job-separation requirement above) --
+  # attestation subjects must be files on the SAME runner as the attest
+  # step, so a single shared step spanning two jobs is not an option
+  # regardless of glob syntax. This job therefore runs its own SECOND
+  # `attest-build-provenance` step, scoped to `release-assets/*.apk` only
+  # (mirroring the existing ipk step's scope of just the built package
+  # files, not the pubkey/checksums/SBOM metadata alongside them).
+  # C5 (RFC §4.6): `!cancelled()` -- run best-effort even if build-apk failed
+  # for one matrix leg (fail-fast:false still flips build-apk's own
+  # conclusion to "failure" for ANY leg breaking, which would otherwise
+  # silently skip this whole job, including the arches that built fine).
+  # `needs.release.result == 'success'` is an EXPLICIT re-statement of the
+  # default "skip if a needed job failed" behavior that `!cancelled()`
+  # otherwise overrides wholesale -- deliberately kept strict for `release`
+  # specifically (unlike build-apk): there is nothing to attach apk assets
+  # TO if the ipk release itself hard-failed (its own signing failure stays
+  # hard-fail, per RFC §1/§4.6 -- "do NOT soften the ipk path"), and running
+  # softprops/action-gh-release against a tag whose `release` job failed
+  # risks creating a stray apk-only release under that tag. So: best-effort
+  # w.r.t. apk-side partial failures, still strictly gated on the ipk
+  # release having actually succeeded.
+  release-apk-assets:
+    if: ${{ !cancelled() && needs.release.result == 'success' && github.event.inputs.republish != 'true' }}
+    needs: [select-matrix, release, build-apk]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set version
+        id: version
+        run: |
+          echo "version=${{ github.event.inputs.tailscale_version }}" >> "$GITHUB_OUTPUT"
+          echo "release=${{ github.event.inputs.pkg_release }}" >> "$GITHUB_OUTPUT"
+
+      # TODO(B4 human gate, RFC §4.2d): apk-signing.pem does not exist in
+      # this repo yet -- B4 must generate the production EC keypair via
+      # imprimatur's deploy and commit the PUBLIC half here (mirrors
+      # signing.pub's existing usign convention, and publish-feed's
+      # identical check above). Fails loudly and deliberately until then --
+      # an absent production pubkey must never look like "nothing to
+      # attach", it must fail loud (RFC guiding constraint #2, §1). This
+      # failure does not reach back and fail the ipk `release` job (see the
+      # job-level isolation note above).
+      - name: Check production EC pubkey is committed
+        run: |
+          test -f apk-signing.pem || {
+            echo "::error::apk-signing.pem not found at repo root -- B4 (deploy imprimatur) must commit the production EC public key before apk release assets can be attached. See RFC §4.2d. This failure is expected until B4 lands and does not block the ipk release (see §4.6 isolation)."
+            exit 1
+          }
+
+      # Only for the combined SHA256SUMS/SBOM below -- these files are
+      # never re-uploaded as release assets themselves (release owns them).
+      - name: Download ipk artifacts (for the combined SHA256SUMS/SBOM only)
+        uses: actions/download-artifact@v4
+        with:
+          pattern: 'tailscale-*'
+          path: ipk-packages
+          merge-multiple: true
+
+      - name: Download apk-* artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: 'apk-*'
+          path: built-apks
+
+      - name: Assemble arch-namespaced release assets
+        env:
+          ARCHES_JSON: ${{ needs.select-matrix.outputs.arches }}
+        run: |
+          set -eu
+          VERSION="${{ steps.version.outputs.version }}"
+          PKG_RELEASE="${{ steps.version.outputs.release }}"
+          mkdir -p release-assets
+          find ipk-packages -maxdepth 1 -type f \( -name '*.ipk' -o -name 'tailscaled_*' \) -exec cp {} release-assets/ \;
+          cp apk-signing.pem release-assets/
+
+          for arch in $(echo "${ARCHES_JSON}" | jq -r '.[].name'); do
+            SRC_APK=$(find "built-apks/apk-${arch}" -name '*.apk' | head -1)
+            [ -n "${SRC_APK}" ] || { echo "::error::no built .apk found for ${arch} under built-apks/apk-${arch}"; exit 1; }
+            cp "${SRC_APK}" "release-assets/tailscale-${VERSION}-r${PKG_RELEASE}-${arch}.apk"
+          done
+
+      - name: Generate combined checksums (ipk + apk + pubkey)
+        run: scripts/release-checksums.sh release-assets
+
+      - name: Generate SBOM (ipk + apk)
+        uses: anchore/sbom-action@v0
+        with:
+          path: release-assets/
+          output-file: release-assets/sbom.spdx.json
+          format: spdx-json
+
+      - name: Attest build provenance (.apk)
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: release-assets/*.apk
+
+      - name: Attach apk assets + pubkey to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          files: |
+            release-assets/*.apk
+            release-assets/apk-signing.pem
+            release-assets/SHA256SUMS
+            release-assets/sbom.spdx.json
+
+      # C5 (RFC §4.6): loud alert if apk release-asset attach fails (e.g. a
+      # missing arch's .apk -- see the die-loud check above). Never affects
+      # the ipk release itself, which by this point has already succeeded
+      # (see the job-level `needs.release.result == 'success'` gate above).
+      - name: Notify on apk release-asset attach failure
+        if: failure()
+        env:
+          ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
+        run: |
+          scripts/notify-alert.sh "release-apk-assets FAILED (run ${{ github.run_id }}, ${{ github.repository }}) -- ipk release v${{ steps.version.outputs.version }} succeeded but apk assets were not attached"
+
+  # C5 republish path (RFC §4.6): a narrow, standalone entry point that
+  # re-runs ONLY feed assemble+sign+publish -- never a rebuild -- against an
+  # EXISTING release's already-built .apk assets (attached by
+  # release-apk-assets above, in some earlier run). For retrying after an
+  # imprimatur/signing outage, or backfilling apk onto a release that
+  # soft-failed apk publish, without spending a full ipk+apk rebuild.
+  #
+  # Deliberately a SEPARATE job from publish-feed, not a parameterized mode
+  # of it: publish-feed's inputs are this SAME run's build-apk artifacts
+  # (actions/download-artifact) and it stays byte-equivalent to its pre-C5
+  # shape (RFC discipline: don't touch working C1-C4 jobs). republish-feed's
+  # input is a DIFFERENT run's already-published GitHub Release assets (`gh
+  # release download`), fetched by tag -- a genuinely different data source,
+  # not just a different `if:`. The two jobs share the same downstream
+  # primitives (apk mkndx, scripts/adb-sign.py, scripts/feed-guard.sh,
+  # sign.leavitt.info) and the same C3 concurrency group, so a republish can
+  # never interleave with a normal in-flight publish.
+  #
+  # Reads arches.json directly (not select-matrix/needs.select-matrix,
+  # which are both skipped on this path, see their `if:` conditions above)
+  # -- republish always covers the full arch set, there is no PR-scoped
+  # subset concept for a republish.
+  republish-feed:
+    if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.republish == 'true' }}
+    runs-on: ubuntu-latest
+    concurrency:
+      group: apk-feed-publish
+      cancel-in-progress: false
+    # `contents: read` (not write -- this job never creates/modifies a
+    # release, only reads existing release assets via `gh release
+    # download`) alongside `pages`/`id-token`, same least-privilege split as
+    # publish-feed (§4.3 "CI token least-privilege": never accumulate
+    # contents:write + pages:write in one job). actions/checkout and `gh
+    # release download` both need at least read access to the repo/its
+    # releases; an explicit `permissions:` block zeroes everything not
+    # listed, so this must be named, not assumed.
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate republish inputs
+        run: |
+          set -eu
+          if [ -z "${{ github.event.inputs.republish_tag }}" ]; then
+            echo "::error::republish=true requires republish_tag (e.g. v1.98.8) -- which release's already-built .apk assets to republish."
+            exit 1
+          fi
+
+      # TODO(B4 human gate, RFC §4.2d): apk-signing.pem does not exist in
+      # this repo yet -- same loud, deliberate failure as publish-feed's
+      # identical check, until B4 lands.
+      - name: Check production EC pubkey is committed
+        run: |
+          test -f apk-signing.pem || {
+            echo "::error::apk-signing.pem not found at repo root -- B4 (deploy imprimatur) must commit the production EC public key before republish-feed can sign anything real. See RFC §4.2d."
+            exit 1
+          }
+
+      - name: Download already-built .apk release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          TAG="${{ github.event.inputs.republish_tag }}"
+          mkdir -p republish-apks
+          gh release download "${TAG}" \
+            --repo ${{ github.repository }} \
+            --pattern '*.apk' \
+            --dir republish-apks
+          ls -l republish-apks
+
+      - name: Extract pinned apk-tools binary
+        run: |
+          . tests/apk/lib.sh
+          extract_apk_tools_binary "${RUNNER_TEMP}/apk-bin" tailscale-package
+          echo "${RUNNER_TEMP}/apk-bin" >> "$GITHUB_PATH"
+
+      # sign.leavitt.info is behind Traefik's tailscale-only middleware, so the
+      # runner must join the tailnet before POSTing the pre-image to /sign/ec
+      # (same pattern the ipk `release` job uses for usign signing). apk.leavitt.dev
+      # (the published feed the monotonicity guard reads) is public Pages and needs
+      # no tailnet -- only the signer round-trip does.
+      - name: Connect to Tailscale
+        uses: tailscale/github-action@v4
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          audience: ${{ secrets.TS_AUDIENCE }}
+          tags: tag:ci
+
+      # Per-arch pipeline -- identical shape to publish-feed's (RFC §4.2a
+      # Design 1 signing, §4.3 monotonicity + retention), except the source
+      # .apk comes from the downloaded release asset
+      # (tailscale-<ver>-r<rel>-<arch>.apk, per release-apk-assets' naming)
+      # instead of this run's build-apk artifact.
+      # H6/H7/H3: same shared scripts/publish-arch.sh as publish-feed above
+      # (verify-before-publish hard gate + imprimatur bearer-token auth
+      # included).
+      #
+      # FIX1 (round-3 code review): publish-arch.sh now takes the published
+      # filename as an explicit argument instead of deriving it from
+      # basename(<apk-file>). Previously that forced a whole rename/copy
+      # side-pipeline here (a RENAMED_ROOT temp tree + sed to strip the arch
+      # suffix release-apk-assets added + cp), purely to satisfy
+      # publish-arch.sh's naming convention, with nothing validating that the
+      # derived basename actually matched the feed convention. Now the
+      # de-arch-suffixed name (tailscale-<ver>-r<rel>-<arch>.apk ->
+      # tailscale-<ver>-r<rel>.apk) is computed and passed straight through;
+      # publish-arch.sh does its own internal cp to that name in the feed
+      # tree, so no rename scaffolding is needed here at all.
+      - name: Assemble + sign + guard + retain each arch
+        env:
+          FORCE_PUBLISH: ${{ github.event.inputs.force_publish }}
+          IMPRIMATUR_AUTH_TOKEN: ${{ secrets.IMPRIMATUR_AUTH_TOKEN }}
+        run: |
+          set -eu
+          PAGES_ROOT="${PWD}/pages-root"
+          mkdir -p "${PAGES_ROOT}/apk/keys"
+          cp apk-signing.pem "${PAGES_ROOT}/apk/keys/tailscale.pem"
+
+          FORCE_ARGS=""
+          if [ "${FORCE_PUBLISH}" = "true" ]; then FORCE_ARGS="--force"; fi
+
+          for arch in $(jq -r '.[].name' arches.json); do
+            APK_FILE=$(find republish-apks -maxdepth 1 -name "*-${arch}.apk" | head -1)
+            [ -n "${APK_FILE}" ] || { echo "::error::no republish .apk found for ${arch} among the ${{ github.event.inputs.republish_tag }} release assets (pattern *-${arch}.apk)"; exit 1; }
+            # De-arch-suffix the release asset's name
+            # (tailscale-<ver>-r<rel>-<arch>.apk -> tailscale-<ver>-r<rel>.apk)
+            # so the feed's filename convention matches a normal publish --
+            # passed straight to publish-arch.sh, no local rename needed.
+            PUBLISHED_NAME=$(basename "${APK_FILE}" | sed "s/-${arch}\.apk\$/.apk/")
+
+            sh scripts/publish-arch.sh "${arch}" "${APK_FILE}" "${PUBLISHED_NAME}" "${PAGES_ROOT}" ${FORCE_ARGS}
+          done
+
+          cat > "${PAGES_ROOT}/_headers" <<'HEADERS_EOF'
+          /apk/*/packages.adb
+            Cache-Control: no-cache
+          /apk/*/*.apk
+            Cache-Control: public, max-age=31536000, immutable
+          HEADERS_EOF
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: pages-root
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+      - name: Post-publish integrity verify (index-walk, §4.3)
+        run: |
+          set -eu
+          for arch in $(jq -r '.[].name' arches.json); do
+            sh scripts/feed-guard.sh verify-tree "pages-root/apk/${arch}" "https://apk.leavitt.dev/apk/${arch}"
+          done
+
+      # C5 (RFC §4.6): same alert channel as publish-feed's failure step --
+      # a republish attempt failing (e.g. the imprimatur outage it was
+      # trying to work around is still ongoing) must be just as loud as a
+      # normal publish failure, not quieter because it's the "retry" path.
+      - name: Notify on apk feed republish failure
+        if: failure()
+        env:
+          ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
+        run: |
+          scripts/notify-alert.sh "republish-feed FAILED for ${{ github.event.inputs.republish_tag }} (run ${{ github.run_id }}, ${{ github.repository }})"

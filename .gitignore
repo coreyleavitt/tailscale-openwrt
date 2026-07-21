@@ -26,3 +26,6 @@ Thumbs.db
 *.log
 gh-artifacts/
 CODE_REVIEW.md
+
+# Test caches (downloaded rootfs tarballs etc.)
+tests/apk/.cache/

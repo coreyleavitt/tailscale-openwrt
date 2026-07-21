@@ -4,7 +4,11 @@
 # enable state across upgrades. The symlinks are cleaned up in postrm
 # for full removal only.
 
-if [ -x /etc/init.d/tailscale ]; then
+# IPKG_INSTROOT is set by apk/opkg during an offline install (e.g. an
+# ImageBuilder bake). Stopping a service is a live-system action (RFC
+# docs/rfc-apk-builds.md §4.1 rule 2) -- there is no running daemon to
+# signal during a bake, so no-op in that case. Unchanged when unset.
+if [ -z "${IPKG_INSTROOT:-}" ] && [ -x /etc/init.d/tailscale ]; then
     /etc/init.d/tailscale stop 2>/dev/null || true
 fi
 

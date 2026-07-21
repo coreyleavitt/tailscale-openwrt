@@ -1,0 +1,184 @@
+#!/bin/sh
+# tests/apk/fixtures/uci-stub
+#
+# Minimal stand-in for uci(1), used only by tests/apk/instroot.sh. Real uci
+# is a compiled OpenWrt/libuci target binary, not available host-native and
+# not worth pulling a foreign-arch rootfs + qemu for here -- A3a's guard
+# under test is "does the script redirect to the right directory / skip the
+# right commands", which is exercised identically by a stub that honors -c
+# correctly. This is not a general uci reimplementation: it supports only
+# the subset the tailscale maintainer scripts + tailscale-killswitch.sh call
+# (named-section get/set/delete/commit, -q, -c <dir>, anonymous @type[idx]
+# section addressing, and add_list) against a simple tab-separated store,
+# one file per uci package under the config dir.
+#
+# Storage format per package file: one line per fact --
+#   S<TAB>section<TAB>type
+#   O<TAB>section<TAB>option<TAB>value   (scalar; `get` reads the LAST
+#                                         matching line, so repeated `set`
+#                                         calls overwrite by simple append,
+#                                         no in-place edit needed)
+#   L<TAB>section<TAB>option<TAB>value   (list entry, written only by
+#                                         `add_list`; `get` returns ALL
+#                                         matching L-lines, one per output
+#                                         line, in append order -- this is
+#                                         what lets tailscale-killswitch.sh's
+#                                         dhcp.@dnsmasq[0].server
+#                                         backup/restore round-trip exercise
+#                                         real list semantics, e.g. the C3
+#                                         DNS-backup regression test)
+#
+# Anonymous section addressing (`@type[idx]`, e.g. `dhcp.@dnsmasq[0]`) is
+# resolved against the existing S-lines for that package: the (idx)'th
+# section (0-based) whose recorded type matches, in file order. A test must
+# seed that section first via a normal named `uci set pkg.name=type` --
+# this stub never invents section names, it only resolves the reference.
+
+set -eu
+
+CONFDIR="${UCI_STUB_CONFDIR:-/etc/config}"
+QUIET=0
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -q) QUIET=1; shift ;;
+        -c) CONFDIR="$2"; shift 2 ;;
+        *) break ;;
+    esac
+done
+
+cmd="${1:-}"
+[ $# -gt 0 ] && shift
+arg="${1:-}"
+
+die() {
+    [ "$QUIET" -eq 1 ] || echo "uci: $*" >&2
+    exit 1
+}
+
+mkdir -p "$CONFDIR"
+
+# resolve_section pkg token -- print the concrete section name for $token
+# (passing named sections through unchanged, resolving "@type[idx]" against
+# the S-lines in $CONFDIR/$pkg). Exits nonzero (prints nothing) if an
+# anonymous reference can't be resolved -- callers decide whether that's
+# fatal (via die) or just an empty/absent result.
+resolve_section() {
+    _rs_pkg="$1"
+    _rs_tok="$2"
+    case "$_rs_tok" in
+        @*)
+            _rs_rest=${_rs_tok#@}
+            _rs_type=${_rs_rest%%\[*}
+            _rs_idxpart=${_rs_rest#*\[}
+            _rs_idx=${_rs_idxpart%%\]*}
+            awk -F'\t' -v t="$_rs_type" -v i="$_rs_idx" '
+                $1=="S" && $3==t {
+                    if (n==i) { print $2; found=1; exit }
+                    n++
+                }
+                END { if (!found) exit 1 }
+            ' "$CONFDIR/$_rs_pkg"
+            ;;
+        *)
+            printf '%s\n' "$_rs_tok"
+            ;;
+    esac
+}
+
+pkg=${arg%%.*}
+file="$CONFDIR/$pkg"
+touch "$file"
+
+rest=""
+case "$arg" in *.*) rest=${arg#*.} ;; esac
+section=${rest%%.*}
+option=""
+case "$rest" in *.*) option=${rest#*.} ;; esac
+
+if [ -n "$section" ]; then
+    resolved=$(resolve_section "$pkg" "$section") || die "Entry not found"
+    section="$resolved"
+fi
+
+case "$cmd" in
+    get)
+        if [ -n "$option" ]; then
+            list_vals=$(awk -F'\t' -v s="$section" -v k="$option" '
+                $1=="L" && $2==s && $3==k { print $4 }
+            ' "$file")
+            if [ -n "$list_vals" ]; then
+                printf '%s\n' "$list_vals"
+            else
+                val=$(awk -F'\t' -v s="$section" -v k="$option" '
+                    $1=="O" && $2==s && $3==k { v=$4; f=1 }
+                    END { if (!f) exit 1; print v }
+                ' "$file") || die "Entry not found"
+                printf '%s\n' "$val"
+            fi
+        else
+            typ=$(awk -F'\t' -v s="$section" '
+                $1=="S" && $2==s { t=$3; f=1 }
+                END { if (!f) exit 1; print t }
+            ' "$file") || die "Entry not found"
+            printf '%s\n' "$typ"
+        fi
+        ;;
+    set)
+        key=${arg%%=*}
+        val=${arg#*=}
+        pkg2=${key%%.*}
+        rest2=${key#*.}
+        case "$rest2" in
+            *.*)
+                sect=${rest2%%.*}
+                opt=${rest2#*.}
+                sect=$(resolve_section "$pkg2" "$sect") || die "Entry not found"
+                printf 'O\t%s\t%s\t%s\n' "$sect" "$opt" "$val" >> "$CONFDIR/$pkg2"
+                ;;
+            *)
+                printf 'S\t%s\t%s\n' "$rest2" "$val" >> "$CONFDIR/$pkg2"
+                ;;
+        esac
+        ;;
+    add_list)
+        key=${arg%%=*}
+        val=${arg#*=}
+        pkg2=${key%%.*}
+        rest2=${key#*.}
+        case "$rest2" in
+            *.*)
+                sect=${rest2%%.*}
+                opt=${rest2#*.}
+                sect=$(resolve_section "$pkg2" "$sect") || die "Entry not found"
+                printf 'L\t%s\t%s\t%s\n' "$sect" "$opt" "$val" >> "$CONFDIR/$pkg2"
+                ;;
+            *)
+                die "add_list requires an option"
+                ;;
+        esac
+        ;;
+    delete)
+        tmp="$file.tmp.$$"
+        if [ -n "$option" ]; then
+            # Option-level delete: remove only matching O/L (scalar/list)
+            # entries for this section+option, preserving the section's own
+            # S-line (type) and any other options -- e.g.
+            # `uci delete dhcp.@dnsmasq[0].server` must not delete the
+            # dnsmasq section itself, only its server list.
+            awk -F'\t' -v s="$section" -v k="$option" '
+                !(($1=="O" || $1=="L") && $2==s && $3==k)
+            ' "$file" > "$tmp" && mv "$tmp" "$file"
+        else
+            # Section-level delete: remove the whole section (S line, all
+            # its options and list entries).
+            awk -F'\t' -v s="$section" '$2!=s' "$file" > "$tmp" && mv "$tmp" "$file"
+        fi
+        ;;
+    commit)
+        : # no-op: set/delete/add_list already durable
+        ;;
+    *)
+        die "unsupported command: $cmd"
+        ;;
+esac

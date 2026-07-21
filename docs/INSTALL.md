@@ -1,8 +1,31 @@
 # Tailscale Installation Guide for OpenWrt
 
+## Which Install Path?
+
+| OpenWrt release | How to detect | Install path |
+|---|---|---|
+| 25.12+ | `. /etc/openwrt_release; echo $DISTRIB_RELEASE` shows `25.x`, or `command -v apk` succeeds | **apk** -- signed feed, `apk add tailscale`, no `--allow-untrusted` |
+| 22.03 - 24.10 | `$DISTRIB_RELEASE` shows `22.x`/`23.x`/`24.x`, or `apk` is absent | **ipk** -- `opkg install` a downloaded `.ipk` |
+| GL.iNet firmware 4.x | `/etc/glversion` exists | **glinet** -- binary swap over the stock `gl-sdk4-tailscale` package (`install-glinet.sh`) |
+
+`scripts/install.sh` runs this detection for you and dispatches to exactly
+one path, in that priority order (GL.iNet's `/etc/glversion` marker is
+checked first, independent of the underlying OpenWrt release string, since
+the binary-swap requirement applies regardless of it):
+
+```bash
+wget -qO- https://raw.githubusercontent.com/coreyleavitt/tailscale-openwrt/master/scripts/install.sh | sh
+```
+
+Force a specific path with `--path apk|ipk|glinet` if auto-detection picks
+the wrong one, or add `-y` to skip confirmation prompts. The rest of this
+guide covers each path manually, plus setup, configuration, and
+troubleshooting common to all of them.
+
 ## Prerequisites
 
-- OpenWrt 22.x, 23.x, or 24.x router
+- OpenWrt 22.x-24.10 (ipk path) or OpenWrt 25.12+ (apk path) router --
+  see the table above
 - SSH access to the router
 - Physical/console access recommended for initial setup
 
@@ -40,6 +63,62 @@ scp packages/tailscale_1.92.3_*.ipk root@<router-ip>:/tmp/
 # Install on router
 ssh root@<router-ip> "opkg install /tmp/tailscale_*.ipk"
 ```
+
+### Option 3: OpenWrt 25.12+ (apk feed)
+
+OpenWrt 25.12 replaced `opkg`/`.ipk` with the `apk` package manager, and apk
+trust flows from a **signed feed index**, not a signed file -- a lone `.apk`
+is always `UNTRUSTED`. This repo publishes a signed `packages.adb` feed so
+`apk add tailscale` works with no `--allow-untrusted` flag.
+
+```bash
+# SSH into your router
+ssh root@<router-ip>
+
+# Trust the feed's signing key
+mkdir -p /etc/apk/keys
+wget -O /etc/apk/keys/tailscale.pem https://apk.leavitt.dev/apk/keys/tailscale.pem
+
+# Add the per-arch feed. The entry must be the full URL to packages.adb
+# itself -- apk does not append a filename to a bare directory URL.
+mkdir -p /etc/apk/repositories.d
+echo "https://apk.leavitt.dev/apk/<arch>/packages.adb" >> /etc/apk/repositories.d/customfeeds.list
+
+# Install -- trusted, no --allow-untrusted
+apk update
+apk add tailscale
+```
+
+Replace `<arch>` with your device's architecture: `aarch64_cortex-a53`,
+`arm_cortex-a7`, `mips_24kc`, or `mipsel_24kc` (see [Supported
+Architectures](../README.md#supported-architectures)).
+
+Or use the one-line installer, which does all of the above plus a
+`ca-bundle` preflight (the feed is HTTPS and needs `ca-bundle` for TLS trust,
+but `ca-bundle` is itself only a *dependency of* the tailscale package --
+the preflight installs it from whatever feeds are already configured before
+adding ours):
+
+```bash
+wget -qO- https://raw.githubusercontent.com/coreyleavitt/tailscale-openwrt/master/scripts/install.sh | sh
+```
+
+**The LuCI web UI (`luci-app-tailscale`) is a separate, ipk-only project.**
+This feed does not ship it -- `apk add tailscale` on OpenWrt 25 installs the
+CLI, `tailscaled`, and the netifd protocol handler JS only, same as the ipk
+build. There is no apk path for the web UI.
+
+**Upgrading from an ipk install (24.10 -> 25.12 sysupgrade).** `apk` and
+`opkg` are separate, disjoint package databases -- `apk` cannot see an
+opkg-tracked `tailscale` install at all. If a sysupgrade preserves `/etc`
+(and the rest of a previous ipk install's footprint) into a 25.12 image,
+`scripts/install.sh`'s apk path detects the leftover opkg bookkeeping
+(`/usr/lib/opkg/info/tailscale.*`) and cleans it up -- running the old
+install's own removal logic (so firewall/UCI state and any killswitch DNS
+redirect are properly restored, not left orphaned) -- **before** installing
+via apk. This runs automatically; no manual step is needed. If you install
+via the raw `apk add tailscale` commands above instead of `install.sh`, run
+`opkg remove tailscale` (if `opkg` is still present) yourself first.
 
 ## What Gets Installed
 
@@ -377,7 +456,7 @@ tailscale exitnode status
 tailscale-setup
 ```
 
-## Uninstalling
+## Uninstalling (ipk)
 
 ```bash
 opkg remove tailscale
@@ -394,6 +473,69 @@ To completely remove all state:
 opkg remove tailscale
 rm -rf /etc/tailscale
 ```
+
+## Uninstalling (apk)
+
+```bash
+apk del tailscale
+```
+
+The apk `post-deinstall` script ports the same `postrm` logic used by the
+ipk build, so this does the same cleanup as `opkg remove` above: removes
+firewall rules/zones, removes the network interface, and restores DNS if
+killswitch was enabled.
+
+To also remove the feed entry and trust key:
+```bash
+grep -v '/apk/.*/packages\.adb$' /etc/apk/repositories.d/customfeeds.list \
+  > /tmp/customfeeds.list.new && mv /tmp/customfeeds.list.new /etc/apk/repositories.d/customfeeds.list
+rm -f /etc/apk/keys/tailscale.pem
+```
+
+To completely remove all state:
+```bash
+apk del tailscale
+rm -rf /etc/tailscale
+```
+
+## Downgrading (apk)
+
+The apk feed publishes **latest only** -- there is no multi-version
+retention, so a *trusted* downgrade from the feed is not possible (a
+two-tier or multi-version feed is a documented later-stage option, not v1).
+To roll back to an older version, fetch that version's `.apk` directly from
+the GitHub release and install it with `--allow-untrusted`:
+
+```bash
+# Release assets are arch-namespaced:
+# tailscale-<version>-r<release>-<arch>.apk
+wget https://github.com/coreyleavitt/tailscale-openwrt/releases/download/v<old-version>/tailscale-<old-version>-r<release>-<arch>.apk
+
+apk add --allow-untrusted ./tailscale-<old-version>-r<release>-<arch>.apk
+```
+
+This bypasses the signed feed by design, so apk will not verify the package
+against `/etc/apk/keys/tailscale.pem` -- only use it against a release asset
+downloaded from this repo's own [Releases](https://github.com/coreyleavitt/tailscale-openwrt/releases)
+page. **Verified:** `apk-tools` 3.0.2 supports a plain local-file downgrade
+with no flags beyond `--allow-untrusted` -- apk's own transaction log reports
+it explicitly (`Downgrading tailscale (<new> -> <old>)`). Exercised against a
+real verification container in `tests/apk/upgrade-downgrade.sh`.
+
+## Mirroring This Feed
+
+apk trust is **index-content-based**, not tied to a specific host: `apk`
+verifies the signed `packages.adb` against your pinned `tailscale.pem`
+regardless of where it was fetched from. To mirror this feed:
+
+1. Copy `apk/<arch>/packages.adb` and `apk/<arch>/*.apk` for each arch you
+   need, plus `apk/keys/tailscale.pem`, to any HTTPS host.
+2. Point `/etc/apk/repositories.d/customfeeds.list` at your mirror's
+   `packages.adb` URL instead of `apk.leavitt.dev`'s.
+
+A re-hosted copy still verifies correctly as long as the files are copied
+byte-for-byte -- signature verification happens entirely on the device, so
+mirroring needs no re-signing or key exchange.
 
 ## Important Notes
 

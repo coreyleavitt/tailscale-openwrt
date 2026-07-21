@@ -53,6 +53,107 @@ jobs:
             -f tailscale_version="$VERSION" \
             -f pkg_release="1"
 
+      # C5 self-heal + synthetic probe (RFC docs/rfc-apk-builds.md §4.6,
+      # slice C5). Both need a real `apk` binary on PATH (adbdump/version -t)
+      # -- extracted once here and reused by both steps below, same
+      # extract_apk_tools_binary helper the publish-feed workflow job and
+      # tests/apk/feed-publish.sh already use (tests/apk/lib.sh, A1).
+      #
+      # Only when needs_build == 'false' (a release for the latest upstream
+      # tag already exists): running the drift/version-currency checks right
+      # after triggering a brand-new build would be a guaranteed, meaningless
+      # false alarm (the feed cannot possibly reflect a release that doesn't
+      # exist yet -- the new build+publish pipeline hasn't even started).
+      - name: Extract pinned apk-tools binary (for feed version checks)
+        if: steps.check.outputs.needs_build == 'false'
+        run: |
+          . tests/apk/lib.sh
+          extract_apk_tools_binary "${RUNNER_TEMP}/apk-bin" tailscale-package
+          echo "${RUNNER_TEMP}/apk-bin" >> "$GITHUB_PATH"
+
+      # Self-heal (RFC §4.6): with apk/ipk failure isolation (C5 above) in
+      # place, an apk-path soft-failure no longer fails the ipk release --
+      # so the `gh release view` gate above now reads "done" even when apk
+      # was never published for that release. This is the other half: does
+      # the published feed actually reflect the latest release? Factored
+      # into scripts/detect-apk-drift.sh (testable locally, see
+      # tests/apk/failure-isolation.sh) rather than inlined here, so the
+      # decision logic isn't only exercisable via a live cron run.
+      - name: Detect apk feed drift (self-heal check)
+        if: steps.check.outputs.needs_build == 'false'
+        id: drift
+        run: |
+          set -eu
+          TAG="${{ steps.tailscale.outputs.tag }}"
+          ARCH=$(jq -r '.[0].name' arches.json)
+          FEED_URL="https://apk.leavitt.dev/apk/${ARCH}/packages.adb"
+          set +e
+          OUT=$(sh scripts/detect-apk-drift.sh "${TAG}" "${FEED_URL}" 2>&1)
+          RC=$?
+          set -e
+          echo "${OUT}"
+          if [ "${RC}" -eq 1 ]; then
+            echo "drift=true" >> "$GITHUB_OUTPUT"
+          elif [ "${RC}" -eq 0 ]; then
+            echo "drift=false" >> "$GITHUB_OUTPUT"
+          else
+            # Hard error (network blip, DNS, 5xx) -- refuse to guess. Never
+            # auto-republish on an unconfirmed signal (a transient probe
+            # failure firing a republish dispatch would itself be a new,
+            # confusing failure mode), but still surface it loudly.
+            echo "::warning::detect-apk-drift.sh hard-errored (exit ${RC}) -- not auto-republishing on an unconfirmed signal. See the alert below."
+            echo "drift=false" >> "$GITHUB_OUTPUT"
+            echo "harderror=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Auto-fire republish dispatch (apk self-heal)
+        if: steps.drift.outputs.drift == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
+        run: |
+          set -eu
+          TAG="${{ steps.tailscale.outputs.tag }}"
+          scripts/notify-alert.sh "apk self-heal: feed missing/stale for release ${TAG} -- auto-firing a republish dispatch (RFC §4.6)"
+          gh workflow run build-tailscale.yaml \
+            --repo ${{ github.repository }} \
+            -f republish=true \
+            -f republish_tag="${TAG}"
+
+      - name: Alert on drift-detection hard error
+        if: steps.drift.outputs.harderror == 'true'
+        env:
+          ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
+        run: |
+          scripts/notify-alert.sh "apk self-heal check could not determine feed drift for ${{ steps.tailscale.outputs.tag }} (transient fetch error) -- investigate manually, no republish was auto-fired"
+
+      # Synthetic feed/cert probe (RFC §4.6): catches SILENT DECAY of the
+      # static feed between releases (a Pages custom-domain cert-renewal
+      # failure, DNS/CNAME drift, a Pages outage) -- none of which touch a
+      # CI job, so nothing else in this pipeline would ever see them.
+      # Factored into scripts/probe-feed.sh (testable locally against a
+      # self-signed-cert server + a locally-signed feed, see
+      # tests/apk/failure-isolation.sh) -- reuses the SAME alert channel as
+      # the self-heal check above (RFC: "reuse the alert channel on
+      # failure"), not a separate notification path.
+      - name: Synthetic feed/cert probe
+        if: steps.check.outputs.needs_build == 'false'
+        env:
+          ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
+        run: |
+          set +e
+          ARCH=$(jq -r '.[0].name' arches.json)
+          TAG="${{ steps.tailscale.outputs.tag }}"
+          OUT=$(sh scripts/probe-feed.sh \
+            "https://apk.leavitt.dev/apk/${ARCH}" \
+            "https://apk.leavitt.dev/apk/keys/tailscale.pem" \
+            "${TAG}" 2>&1)
+          RC=$?
+          echo "${OUT}"
+          if [ "${RC}" -ne 0 ]; then
+            printf '%s\n' "${OUT}" | scripts/notify-alert.sh "synthetic feed probe FAILED for ${TAG} -- apk.leavitt.dev may be down, mis-certified, or serving a stale/tampered feed"
+          fi
+
       - name: Record check state (keepalive)
         env:
           GH_TOKEN: ${{ github.token }}
