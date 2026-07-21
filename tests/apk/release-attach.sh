@@ -19,6 +19,16 @@
 #       only -- no contents/attestations creep into that job, no
 #       pages/id-token creep into this one).
 #   (d) the workflow YAML parses (well-formed).
+#   (e) FIX (confirmed live bug, v1.98.9): this job's SHA256SUMS is a
+#       COMBINED (ipk+apk+pem) regeneration that overwrites the ipk-only
+#       SHA256SUMS the `release` job already usign-signed -- so this job
+#       must independently re-sign it (a /sign/usign step targeting
+#       SHA256SUMS, with the same bearer-header auth pattern, behind a
+#       tailnet join) and include the freshly-signed SHA256SUMS.sig in its
+#       own gh-release upsert file list. Otherwise the release's attached
+#       SHA256SUMS.sig verifies against stale ipk-only bytes and on-device
+#       `usign -V` (scripts/install-glinet.sh download_binary()) fails on
+#       every release.
 #
 # Also asserts the pre-existing `release` job (ipk) is untouched: same
 # `needs`, same permissions, same `subject-path: packages/*.ipk`, same
@@ -100,6 +110,42 @@ attach_txt = steps_text(attach_job)
 result["attach_files_include_apk"] = ".apk" in attach_txt
 result["attach_files_include_pem"] = ".pem" in attach_txt
 
+# (a2) FIX (live bug, v1.98.9): the combined SHA256SUMS this job regenerates
+# (scripts/release-checksums.sh, ipk+apk+pem) must be RE-SIGNED here -- it
+# supersedes/overwrites the ipk-only SHA256SUMS the `release` job already
+# signed, so the release's attached SHA256SUMS.sig must verify against the
+# COMBINED bytes, not the stale ipk-only ones. Assert: (1) some step in this
+# job invokes /sign/usign with the bearer-header auth pattern AND targets
+# SHA256SUMS specifically (not just a copy of the ipk-signing pattern that
+# happens to exist elsewhere), and (2) the freshly-signed SHA256SUMS.sig is
+# in this job's own gh-release upsert file list (files: list checked above
+# via attach_txt already covers .sig within '.apk'/'.pem' substrings? no --
+# check explicitly for the literal SHA256SUMS.sig token).
+
+
+def has_sign_step_for_sha256sums(job):
+    for step in job.get("steps", []) or []:
+        run = str(step.get("run", ""))
+        if "/sign/usign" in run and "SHA256SUMS" in run and "Authorization: Bearer" in run:
+            return True
+    return False
+
+
+result["attach_signs_combined_sha256sums"] = has_sign_step_for_sha256sums(attach_job)
+result["attach_files_include_sha256sums_sig"] = "SHA256SUMS.sig" in attach_txt
+
+# The signing step must also actually join the tailnet (sign.leavitt.info is
+# tailnet-gated) -- reuse of the same tailscale/github-action pattern the
+# `release` job's equivalent signing step depends on.
+def has_tailscale_join(job):
+    for step in job.get("steps", []) or []:
+        if "tailscale/github-action" in str(step.get("uses", "")):
+            return True
+    return False
+
+
+result["attach_job_joins_tailscale"] = has_tailscale_join(attach_job)
+
 # (b) attest coverage for .apk: either a single attest step whose
 # subject-path (possibly multi-line) mentions both .ipk and .apk, or two
 # separate attest-build-provenance steps (one per job) together covering
@@ -163,6 +209,15 @@ echo
 echo "=== (a) gh-release upload list includes .apk + pubkey .pem ==="
 assert_eq "attach job's gh-release files reference .apk assets" "true" "$(echo "${STRUCT_JSON}" | jq -r '.attach_files_include_apk')"
 assert_eq "attach job's gh-release files reference the .pem pubkey" "true" "$(echo "${STRUCT_JSON}" | jq -r '.attach_files_include_pem')"
+
+echo
+echo "=== (a2) FIX: combined SHA256SUMS is re-signed, and the fresh .sig is attached ==="
+assert_eq "attach job re-signs the combined SHA256SUMS (/sign/usign + bearer header, targeting SHA256SUMS)" "true" \
+    "$(echo "${STRUCT_JSON}" | jq -r '.attach_signs_combined_sha256sums')"
+assert_eq "attach job joins the tailnet (sign.leavitt.info is tailnet-gated)" "true" \
+    "$(echo "${STRUCT_JSON}" | jq -r '.attach_job_joins_tailscale')"
+assert_eq "attach job's gh-release files include the freshly-signed SHA256SUMS.sig" "true" \
+    "$(echo "${STRUCT_JSON}" | jq -r '.attach_files_include_sha256sums_sig')"
 
 echo
 echo "=== (b) attest-build-provenance covers .apk (glob or second step) ==="

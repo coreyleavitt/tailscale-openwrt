@@ -852,14 +852,18 @@ jobs:
   # privilege" split (one token accumulating both a Pages-deploy capability
   # and a release-write capability). softprops/action-gh-release overwrites
   # any already-uploaded asset with the same filename on a re-upload, which
-  # is how this job's combined ipk+apk SHA256SUMS/sbom.spdx.json SUPERSEDE
-  # `release`'s ipk-only versions -- both are recomputed by re-hashing/
-  # re-scanning the same underlying ipk files, so the ipk lines/entries are
-  # byte-identical to what `release` alone would have produced (ipk
-  # behavior stays unchanged, only extended). The .ipk/tailscaled_* files
-  # themselves are NOT re-uploaded here (only SHA256SUMS/sbom.spdx.json are
-  # superseded, plus the new .apk/.pem assets are added) -- `release`
-  # remains the sole owner of the actual ipk release files.
+  # is how this job's combined ipk+apk SHA256SUMS/SHA256SUMS.sig/
+  # sbom.spdx.json SUPERSEDE `release`'s ipk-only versions -- SHA256SUMS is
+  # recomputed by re-hashing the same underlying ipk files (so its ipk
+  # lines/entries are byte-identical to what `release` alone would have
+  # produced -- ipk behavior stays unchanged, only extended) plus the new
+  # apk/pem lines, and SHA256SUMS.sig is FRESHLY re-signed against those
+  # combined bytes below (see "Sign combined checksums") -- never left
+  # stale against `release`'s superseded ipk-only signature. The
+  # .ipk/tailscaled_* files themselves are NOT re-uploaded here (only
+  # SHA256SUMS/SHA256SUMS.sig/sbom.spdx.json are superseded, plus the new
+  # .apk/.pem assets are added) -- `release` remains the sole owner of the
+  # actual ipk release files.
   #
   # Arch-namespacing (RFC §3/§4.3 finding, reconfirmed by C1b): all four
   # arches build an IDENTICALLY NAMED tailscale-<version>-r<release>.apk
@@ -969,6 +973,69 @@ jobs:
       - name: Generate combined checksums (ipk + apk + pubkey)
         run: scripts/release-checksums.sh release-assets
 
+      # FIX (confirmed live bug, v1.98.9): scripts/release-checksums.sh just
+      # regenerated a COMBINED SHA256SUMS (ipk+apk+pem) -- DIFFERENT bytes
+      # from the ipk-only SHA256SUMS the `release` job already usign-signed
+      # above. The "Attach apk assets + pubkey to release" step below
+      # upserts this combined SHA256SUMS, OVERWRITING the release's
+      # attached SHA256SUMS -- but without re-signing here, the release's
+      # SHA256SUMS.sig still covers the STALE ipk-only bytes. On-device
+      # `usign -V -m SHA256SUMS -p <pinned pubkey> -x SHA256SUMS.sig`
+      # (scripts/install-glinet.sh's download_binary(), which gates every
+      # hash it trusts on that verify passing) then fails on every release.
+      # sign.leavitt.info is behind Traefik's tailscale-only middleware, so
+      # this job must join the tailnet before it can POST to /sign/usign --
+      # same pattern the ipk `release` job uses above.
+      - name: Connect to Tailscale
+        uses: tailscale/github-action@v4
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          audience: ${{ secrets.TS_AUDIENCE }}
+          tags: tag:ci
+
+      # Re-signs the COMBINED SHA256SUMS that supersedes `release`'s
+      # ipk-only one -- same imprimatur /sign/usign endpoint, same
+      # request/response envelope, same 0600-tempfile bearer-header
+      # technique (FIX3) as the `release` job's "Sign checksums" step
+      # above; this is that identical signing call against the combined
+      # file instead of the ipk-only one, not a new signing scheme.
+      - name: Sign combined checksums
+        env:
+          IMPRIMATUR_AUTH_TOKEN: ${{ secrets.IMPRIMATUR_AUTH_TOKEN }}
+        run: |
+          AUTH_HEADER_FILE=$(mktemp)
+          chmod 600 "${AUTH_HEADER_FILE}"
+          printf 'Authorization: Bearer %s\n' "${IMPRIMATUR_AUTH_TOKEN}" > "${AUTH_HEADER_FILE}"
+          trap 'rm -f "${AUTH_HEADER_FILE}"' EXIT
+
+          SUMS="release-assets/SHA256SUMS"
+          echo "Signing ${SUMS}..."
+          echo -n '{"message": "' > /tmp/release-sums-request.json
+          base64 -w0 "${SUMS}" >> /tmp/release-sums-request.json
+          echo -n '"}' >> /tmp/release-sums-request.json
+          for attempt in 1 2 3; do
+            echo "  Attempt $attempt..."
+            if RESPONSE=$(curl -s --fail-with-body -X POST https://sign.leavitt.info/sign/usign \
+              -H "Content-Type: application/json" \
+              -H "@${AUTH_HEADER_FILE}" \
+              -d @/tmp/release-sums-request.json 2>&1); then
+              SIGNATURE=$(echo "$RESPONSE" | jq -r .signature)
+              if [ -n "$SIGNATURE" ] && [ "$SIGNATURE" != "null" ]; then
+                echo "$SIGNATURE" | base64 -d > "${SUMS}.sig"
+                if [ -s "${SUMS}.sig" ]; then
+                  echo "  Created ${SUMS}.sig ($(stat -c%s "${SUMS}.sig") bytes)"
+                  break
+                fi
+              fi
+            fi
+            echo "  Failed, response: $RESPONSE"
+            [ "$attempt" -lt 3 ] && sleep 5
+          done
+          if [ ! -s "${SUMS}.sig" ]; then
+            echo "ERROR: Failed to sign ${SUMS} after 3 attempts"
+            exit 1
+          fi
+
       - name: Generate SBOM (ipk + apk)
         uses: anchore/sbom-action@v0
         with:
@@ -989,6 +1056,7 @@ jobs:
             release-assets/*.apk
             release-assets/apk-signing.pem
             release-assets/SHA256SUMS
+            release-assets/SHA256SUMS.sig
             release-assets/sbom.spdx.json
 
       # C5 (RFC §4.6): loud alert if apk release-asset attach fails (e.g. a
