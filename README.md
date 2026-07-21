@@ -66,13 +66,16 @@ Or manually:
 ```bash
 mkdir -p /etc/apk/keys /etc/apk/repositories.d
 wget -O /etc/apk/keys/tailscale.pem https://apk.leavitt.dev/apk/keys/tailscale.pem
-echo "https://apk.leavitt.dev/apk/<arch>/packages.adb" >> /etc/apk/repositories.d/customfeeds.list
+# Arch is taken from the device itself (/etc/apk/arch, e.g. aarch64_cortex-a53)
+# -- no need to look yours up. NB: use /etc/apk/arch, not `apk --print-arch`,
+# which prints the bare CPU family ("aarch64") and matches no feed dir.
+echo "https://apk.leavitt.dev/apk/$(head -n1 /etc/apk/arch)/packages.adb" >> /etc/apk/repositories.d/customfeeds.list
 apk update && apk add tailscale
 ```
 
-Replace `<arch>` with one of the four arches above. See the [Installation
-Guide](docs/INSTALL.md#option-3-openwrt-2512-apk-feed) for uninstalling,
-downgrading, and mirroring the feed.
+`apk update` will 404 if your arch isn't published yet (currently the four
+above). See the [Installation Guide](docs/INSTALL.md#option-3-openwrt-2512-apk-feed)
+for uninstalling, downgrading, and mirroring the feed.
 
 **Note:** the LuCI web UI ([luci-app-tailscale](https://github.com/coreyleavitt/luci-app-tailscale))
 is a separate, ipk-only project. This feed does not ship it -- `apk add

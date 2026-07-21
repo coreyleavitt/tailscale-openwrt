@@ -80,18 +80,23 @@ mkdir -p /etc/apk/keys
 wget -O /etc/apk/keys/tailscale.pem https://apk.leavitt.dev/apk/keys/tailscale.pem
 
 # Add the per-arch feed. The entry must be the full URL to packages.adb
-# itself -- apk does not append a filename to a bare directory URL.
+# itself -- apk does not append a filename to a bare directory URL. The arch
+# is read from the device (/etc/apk/arch) so you don't have to look it up.
 mkdir -p /etc/apk/repositories.d
-echo "https://apk.leavitt.dev/apk/<arch>/packages.adb" >> /etc/apk/repositories.d/customfeeds.list
+echo "https://apk.leavitt.dev/apk/$(head -n1 /etc/apk/arch)/packages.adb" >> /etc/apk/repositories.d/customfeeds.list
 
 # Install -- trusted, no --allow-untrusted
 apk update
 apk add tailscale
 ```
 
-Replace `<arch>` with your device's architecture: `aarch64_cortex-a53`,
-`arm_cortex-a7`, `mips_24kc`, or `mipsel_24kc` (see [Supported
-Architectures](../README.md#supported-architectures)).
+The arch comes from `/etc/apk/arch` (your device's exact package arch, e.g.
+`aarch64_cortex-a53` on MediaTek Filogic). Use that file, **not**
+`apk --print-arch`, which prints the bare CPU family (`aarch64`) that matches
+no feed directory. `apk update` will 404 if your arch isn't published yet --
+currently `aarch64_cortex-a53`, `arm_cortex-a7`, `mips_24kc`, `mipsel_24kc`
+(see [Supported Architectures](../README.md#supported-architectures));
+broader coverage is planned.
 
 Or use the one-line installer, which does all of the above plus a
 `ca-bundle` preflight (the feed is HTTPS and needs `ca-bundle` for TLS trust,

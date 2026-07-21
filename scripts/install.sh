@@ -55,6 +55,11 @@ REPO="coreyleavitt/tailscale-openwrt"
 # real feed -- production installs never need to set either.
 APK_FEED_SCHEME="${APK_FEED_SCHEME:-https}"
 APK_FEED_HOST="${APK_FEED_HOST:-apk.leavitt.dev}"
+# The device's OpenWrt package arch lives in /etc/apk/arch (overridable so
+# tests can point at a fixture). This is the exact per-subarch string the feed
+# path must match -- NOT `apk --print-arch`, which prints the bare CPU family
+# (e.g. "aarch64") that matches no per-subarch feed dir.
+APK_ARCH_FILE="${APK_ARCH_FILE:-/etc/apk/arch}"
 
 # SCRIPT_DIR is normally auto-detected from $0; overridable so a test can
 # source this file (where $0 is the invoking shell, not this file) and
@@ -409,8 +414,18 @@ apk_path() {
         exit 1
     fi
 
-    _arch=$(detect_arch)
-    log_info "Using the apk install path -- arch ${_arch}"
+    # Select the feed from the device's OWN package arch (/etc/apk/arch), not a
+    # uname -m guess: that file holds the exact per-subarch string this box uses
+    # (e.g. aarch64_cortex-a53 on MediaTek Filogic, aarch64_generic on armsr,
+    # mipsel_24kc on ath79), which is what the feed path must match. This makes
+    # the install generic -- it picks whatever arch the box actually is. If we
+    # don't publish that arch, `apk update`/`apk add` below fails cleanly with a
+    # clear 404/"no such package" instead of installing a wrong-arch build.
+    # (Note: `apk --print-arch` is deliberately NOT used -- it prints the bare
+    # CPU family "aarch64", which matches no per-subarch feed dir.)
+    _arch=$(head -n1 "${APK_ARCH_FILE}" 2>/dev/null)
+    [ -n "${_arch}" ] || { log_error "could not read this device's apk arch from ${APK_ARCH_FILE}"; exit 1; }
+    log_info "Using the apk install path -- arch ${_arch} (from ${APK_ARCH_FILE})"
 
     # ipk -> apk coexistence preflight (RFC docs/rfc-apk-builds.md
     # section 4.1/4.7, slice D3). apk and opkg are disjoint package databases --

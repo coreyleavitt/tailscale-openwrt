@@ -251,7 +251,7 @@ assert_contains "ipk_path() calls the shared poll_for_service" "${IPK_BODY}" "po
 assert_contains "ipk_path() calls the shared should_reinstall/prompt_confirm path" "${IPK_BODY}" "should_reinstall"
 
 APK_BODY=$(awk '/^apk_path\(\) \{/,/^}/' "${INSTALL_DIR}/install.sh")
-assert_contains "apk_path() calls the shared detect_arch" "${APK_BODY}" "detect_arch"
+assert_contains "apk_path() derives the feed arch from the device's own /etc/apk/arch (APK_ARCH_FILE), not a uname guess" "${APK_BODY}" "APK_ARCH_FILE"
 assert_contains "apk_path() calls the shared poll_for_service" "${APK_BODY}" "poll_for_service tailscaled 30"
 assert_contains "apk_path() calls the shared should_reinstall/prompt_confirm path" "${APK_BODY}" "should_reinstall"
 # Check the actual `apk add`/`apk update` invocation lines specifically
@@ -447,8 +447,12 @@ run_install_sh_apk_path() {
         untrack_and_remove "${_cid}"
         return 1
     fi
-    NATIVE_ARCH_LINE=$(docker exec "${_cid}" cat /etc/apk/arch)
-    docker exec "${_cid}" sh -c "printf '%s\n%s\n' '${NATIVE_ARCH_LINE}' '${ARCH}' > /etc/apk/arch"
+    # Present the container as an aarch64_cortex-a53 device (single-line
+    # /etc/apk/arch) -- exactly what the feed targets, what apk_path() now
+    # reads to select the feed, and what a real MediaTek Filogic / Cortex-A53
+    # router (e.g. GL.iNet Flint 2) reports natively. A generic aarch64_generic
+    # box would instead get a clean 404 here, since we don't publish that arch.
+    docker exec "${_cid}" sh -c "printf '%s\n' '${ARCH}' > /etc/apk/arch"
     docker exec "${_cid}" sh -c "rm -f /etc/apk/repositories.d/*.list"
 
     docker exec "${_cid}" mkdir -p /opt/install-test

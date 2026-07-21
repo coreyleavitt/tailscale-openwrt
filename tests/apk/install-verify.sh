@@ -653,6 +653,15 @@ if [ "$1" = "info" ] && [ "$2" = "-e" ] && [ "$3" = "tailscale" ]; then
 fi
 exit 1
 EOF
+
+# The feed arch comes from /etc/apk/arch (APK_ARCH_FILE), not a command.
+# Point it at a fixture holding aarch64_generic ON PURPOSE: the stub `uname`
+# above reports "aarch64", which the old detect_arch mapping turned into
+# aarch64_cortex-a53. aarch64_generic is a value that mapping can NEVER
+# produce, so asserting apk_path reports it proves the arch now tracks the
+# device's own /etc/apk/arch rather than a uname guess.
+APK_ARCH_FIXTURE="${WORKDIR}/etc-apk-arch"
+printf 'aarch64_generic\n' > "${APK_ARCH_FIXTURE}"
 cat > "${WORKDIR}/stub-apkpath/mkdir" <<'EOF'
 #!/bin/sh
 echo "mkdir:$*" >> "${MKDIR_CALL_LOG:-/dev/null}"
@@ -679,6 +688,8 @@ run_apk_path_gate() {
         export SCRIPT_DIR
         OPKG_INFO_DIR="${WORKDIR}/no-such-opkg-info-dir"
         export OPKG_INFO_DIR
+        APK_ARCH_FILE="${APK_ARCH_FIXTURE}"
+        export APK_ARCH_FILE
         PATH="${WORKDIR}/stub-apkpath:/usr/bin:/bin"
         export PATH
         . "${INSTALL_DIR}/install.sh"
@@ -713,6 +724,12 @@ assert_not_contains "F4: apk_path() does NOT leave the existing install in place
     "$(cat "${WORKDIR}/f4.err")" "Leaving the existing installation in place"
 assert_contains "F4: apk_path() already-installed + -y: proceeds to touch /etc/apk (mkdir called)" \
     "$(cat "${MKDIR_CALL_LOG}" 2>/dev/null || true)" "mkdir:"
+# Generic arch: the stub `uname` reports "aarch64" (which the old detect_arch
+# mapping would have turned into aarch64_cortex-a53), but /etc/apk/arch
+# (APK_ARCH_FILE fixture) holds aarch64_generic -- apk_path must use the file,
+# so the feed arch tracks whatever the device actually is.
+assert_contains "F4: apk_path() takes the feed arch from /etc/apk/arch, not the uname guess" \
+    "$(cat "${WORKDIR}/f4.err")" "arch aarch64_generic (from"
 
 # =====================================================================
 # Part G -- FIX3: ipk_path() control-version/arch identity binding
