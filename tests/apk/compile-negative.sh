@@ -19,7 +19,13 @@
 #   (c) GOARCH=mips/mipsle but GOMIPS is left empty (Go's silent hardfloat
 #       default SIGILLs on softfloat MIPS silicon -- the same class of live
 #       bug already fixed once for arm_cortex-a7, see RFC §9);
-#   (d) GOARCH=mips64/mips64le but GOMIPS64 is left empty (same reasoning).
+#   (d) GOARCH=mips64/mips64le but GOMIPS64 is left empty (same reasoning);
+#   (e) GOARCH=arm but GOARM is left empty (L7 code-review finding: every
+#       arm row in arches.json requires a specific GOARM, same class of
+#       silently-wrong-build risk as (c)/(d), even though Go's own default
+#       doesn't SIGILL here);
+#   (f) GOARCH=386 but GO386 is left empty (L7, same reasoning as (e) for
+#       the 386 float ABI).
 # ...and a POSITIVE control that a fully-specified, valid tuple still
 # succeeds (the validation must not reject legitimate input).
 #
@@ -120,6 +126,16 @@ assert_build_fails "mips64le with empty GOMIPS64" "mips64el_mips64r2" "mips64le"
     "GOARCH=mips64le requires GOMIPS64 to be set explicitly"
 
 echo
+echo "=== negative (L7): GOARCH=arm with empty GOARM hard-fails ==="
+assert_build_fails "arm with empty GOARM" "arm_cortex-a9" "arm" "" "" "" "" \
+    "GOARCH=arm requires GOARM to be set explicitly"
+
+echo
+echo "=== negative (L7): GOARCH=386 with empty GO386 hard-fails ==="
+assert_build_fails "386 with empty GO386" "i386_pentium4" "386" "" "" "" "" \
+    "GOARCH=386 requires GO386 to be set explicitly"
+
+echo
 echo "=== positive control: a fully-specified valid tuple still succeeds ==="
 POS_TAG="tailscale-compile-negative-positive:test"
 POS_LOG="${WORKDIR}/positive.log"
@@ -161,5 +177,51 @@ else
     log_fail "valid mips_24kc tuple unexpectedly failed to build -- see ${POS_MIPS_LOG}"
 fi
 docker rmi "${POS_MIPS_TAG}" >/dev/null 2>&1 || true
+
+# Also positively confirm a valid arm tuple (GOARM set) succeeds -- the
+# mirror image of the "arm with empty GOARM" (L7) negative case above.
+echo
+echo "=== positive control (L7): arm_cortex-a9 with GOARM=5 set still succeeds ==="
+POS_ARM_TAG="tailscale-compile-negative-positive-arm:test"
+POS_ARM_LOG="${WORKDIR}/positive-arm.log"
+if docker build \
+    --progress=plain \
+    --target build \
+    --build-arg TAILSCALE_VERSION="${TEST_VERSION}" \
+    --build-arg PKG_RELEASE="${TEST_PKG_RELEASE}" \
+    --build-arg OPENWRT_ARCH=arm_cortex-a9 \
+    --build-arg GOARCH=arm \
+    --build-arg GOARM=5 \
+    --build-arg SKIP_UPX=1 \
+    -t "${POS_ARM_TAG}" \
+    -f "${PKG_DIR}/Dockerfile" "${PKG_DIR}" >"${POS_ARM_LOG}" 2>&1; then
+    log_info "OK: valid arm_cortex-a9 tuple (GOARM=5) builds successfully"
+else
+    log_fail "valid arm_cortex-a9 tuple unexpectedly failed to build -- see ${POS_ARM_LOG}"
+fi
+docker rmi "${POS_ARM_TAG}" >/dev/null 2>&1 || true
+
+# Also positively confirm a valid 386 tuple (GO386 set) succeeds -- the
+# mirror image of the "386 with empty GO386" (L7) negative case above.
+echo
+echo "=== positive control (L7): i386_pentium4 with GO386=sse2 set still succeeds ==="
+POS_386_TAG="tailscale-compile-negative-positive-386:test"
+POS_386_LOG="${WORKDIR}/positive-386.log"
+if docker build \
+    --progress=plain \
+    --target build \
+    --build-arg TAILSCALE_VERSION="${TEST_VERSION}" \
+    --build-arg PKG_RELEASE="${TEST_PKG_RELEASE}" \
+    --build-arg OPENWRT_ARCH=i386_pentium4 \
+    --build-arg GOARCH=386 \
+    --build-arg GO386=sse2 \
+    --build-arg SKIP_UPX=1 \
+    -t "${POS_386_TAG}" \
+    -f "${PKG_DIR}/Dockerfile" "${PKG_DIR}" >"${POS_386_LOG}" 2>&1; then
+    log_info "OK: valid i386_pentium4 tuple (GO386=sse2) builds successfully"
+else
+    log_fail "valid i386_pentium4 tuple unexpectedly failed to build -- see ${POS_386_LOG}"
+fi
+docker rmi "${POS_386_TAG}" >/dev/null 2>&1 || true
 
 harness_finish "tests/apk/compile-negative.sh"

@@ -25,21 +25,27 @@
 #   - ipk: CONTROL/ (control, conffiles, postinst/prerm/postrm) -- see
 #     tailscale-package/Dockerfile's `ipk` stage.
 #
-# Usage:
-#   stage-payload.sh <src-dir> <dest-root> <binary-path>
+# Named flags, not positionals (RFC docs/rfc-apk-arch-coverage.md handoff
+# L4 code-review finding): three similarly-shaped path args is exactly the
+# transposable-positional class of bug scripts/package-apk.sh was already
+# redesigned off of (see that script's own "RFC round-2 D-SEV3" header
+# note) -- stage-payload.sh mirrors that same named-flag convention here.
 #
-#   src-dir      Directory holding the non-binary on-device source files
+# Usage:
+#   stage-payload.sh --src-dir <dir> --dest-root <dir> --binary <path>
+#
+#   --src-dir    Directory holding the non-binary on-device source files
 #                (tailscale.init, tailscale.config, tailscale-wrapper.sh,
 #                tailscale-killswitch.sh, tailscale-killswitch-boot.sh,
 #                tailscale-exitnode.sh, tailscale-setup.sh,
 #                luci-protocol-tailscale.js, tailscale.keep) -- normally
 #                tailscale-package/src.
-#   dest-root    Directory to stage the on-device tree INTO (created if
+#   --dest-root  Directory to stage the on-device tree INTO (created if
 #                missing, along with every subdirectory needed). Explicit
 #                rather than assumed, and CWD-independent -- e.g.
 #                $PKGROOT/files for the apk build, /ipk for the ipk build,
 #                a plain mktemp dir for package-apk.sh.
-#   binary-path  Path to the already-built tailscaled binary for this
+#   --binary     Path to the already-built tailscaled binary for this
 #                family, staged at usr/sbin/tailscaled (mode 755). Taken as
 #                an explicit argument (not a fixed path) because compile
 #                (Docker, per-family) and packaging (host-side, per-arch)
@@ -50,14 +56,41 @@
 
 set -eu
 
-if [ $# -ne 3 ]; then
-    echo "Usage: stage-payload.sh <src-dir> <dest-root> <binary-path>" >&2
+usage() {
+    cat >&2 <<'EOF'
+Usage: stage-payload.sh --src-dir <dir> --dest-root <dir> --binary <path>
+EOF
+}
+
+SRC_DIR=
+DEST_ROOT=
+BINARY_PATH=
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --src-dir)
+            [ $# -ge 2 ] || { echo "stage-payload.sh: --src-dir requires a value" >&2; exit 1; }
+            SRC_DIR="$2"; shift 2 ;;
+        --dest-root)
+            [ $# -ge 2 ] || { echo "stage-payload.sh: --dest-root requires a value" >&2; exit 1; }
+            DEST_ROOT="$2"; shift 2 ;;
+        --binary)
+            [ $# -ge 2 ] || { echo "stage-payload.sh: --binary requires a value" >&2; exit 1; }
+            BINARY_PATH="$2"; shift 2 ;;
+        -h|--help)
+            usage; exit 0 ;;
+        *)
+            echo "stage-payload.sh: unrecognized argument: $1" >&2
+            usage
+            exit 1 ;;
+    esac
+done
+
+if [ -z "${SRC_DIR}" ] || [ -z "${DEST_ROOT}" ] || [ -z "${BINARY_PATH}" ]; then
+    echo "stage-payload.sh: --src-dir, --dest-root, and --binary are all required" >&2
+    usage
     exit 1
 fi
-
-SRC_DIR="$1"
-DEST_ROOT="$2"
-BINARY_PATH="$3"
 
 if [ ! -d "${SRC_DIR}" ]; then
     echo "stage-payload.sh: src-dir '${SRC_DIR}' is not a directory" >&2

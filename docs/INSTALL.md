@@ -117,10 +117,10 @@ generic OpenWrt 25.12 rootfs available upstream, so CI can never qemu-verify
 them (RFC `docs/rfc-apk-arch-coverage.md` §5.6, families A6HF/ASOFT/M32LEHF/
 RV64). `apk add tailscale` still builds, signs, and installs identically on
 these -- only the automated boot-test signal is missing. As of this writing,
-the unverified-tier arches are (kept in sync with `scripts/families.sh
+the unverified-tier arches are (kept in sync with `scripts/arches.sh
 --unverified-arches` by `tests/apk/docs-arch-coverage.sh`):
 
-<!-- BEGIN unverified-tier-arches (drift-guarded by tests/apk/docs-arch-coverage.sh; regenerate with `scripts/families.sh --unverified-arches`) -->
+<!-- BEGIN unverified-tier-arches (drift-guarded by tests/apk/docs-arch-coverage.sh; regenerate with `scripts/arches.sh --unverified-arches`) -->
 - `arm_arm1176jzf-s_vfp`
 - `arm_arm926ej-s`
 - `arm_cortex-a7`

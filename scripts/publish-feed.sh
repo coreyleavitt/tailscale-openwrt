@@ -80,7 +80,7 @@
 #
 #   7. UNVERIFIED-TIER PUBLISH LOG. Once the published-arch set for this run
 #      is known (final accounting, after the core/extended split above),
-#      `assemble` intersects it against `families.sh --unverified-arches`
+#      `assemble` intersects it against `arches.sh --unverified-arches`
 #      (D1, reusing the SAME committed ARCHES_JSON_PATH the depublish guard
 #      already reads -- the authoritative family/verify data, not just this
 #      run's passed-in rows) and log()s exactly which published arches have
@@ -102,9 +102,10 @@
 #       function into a subprocess spawned by `xargs -P`. Not intended to be
 #       called directly by a caller.)
 #
-# <arches-json> is a JSON array; each element may be a full arch object
-# (carrying `.name`, same shape scripts/select-matrix.sh's publish_arches
-# output produces) or a bare string -- `.name // .` handles both.
+# <arches-json> is a JSON array of full arch objects (carrying `.name`, same
+# shape scripts/select-matrix.sh's publish_arches output produces) -- every
+# real caller passes objects; the `.name // .` used to extract names below is
+# a no-op fallback for that case, not a bare-string input path.
 #
 # Overridable via environment (mirrors publish-arch.sh's own convention;
 # tests stub every one of these so the whole thing runs in milliseconds,
@@ -138,9 +139,9 @@
 #                             tier=="core" names from, and (S7b) the table
 #                             the unverified-tier publish log is computed
 #                             against (default: <repo-root>/arches.json)
-#   FAMILIES_SH               path to families.sh, used by the S7b
+#   ARCHES_SH               path to arches.sh, used by the S7b
 #                             unverified-tier publish log (default:
-#                             <repo-root>/scripts/families.sh)
+#                             <repo-root>/scripts/arches.sh)
 #   (publish-arch.sh's own APK_BIN/SIGN_URL/LIVE_BASE_URL/etc env overrides
 #   pass through unchanged -- this script never shadows them.)
 set -eu
@@ -166,10 +167,10 @@ NOTIFY_ALERT="${NOTIFY_ALERT:-${REPO_ROOT}/scripts/notify-alert.sh}"
 # point this at a small fixture instead.
 ARCHES_JSON_PATH="${ARCHES_JSON_PATH:-${REPO_ROOT}/arches.json}"
 # S7b (RFC §5.6/§Slices S7b): the unverified-tier publish log reuses
-# families.sh's own `--unverified-arches` query (D1) rather than
+# arches.sh's own `--unverified-arches` query (D1) rather than
 # re-implementing family grouping here -- see cmd_assemble's final
 # accounting.
-FAMILIES_SH="${FAMILIES_SH:-${REPO_ROOT}/scripts/families.sh}"
+ARCHES_SH="${ARCHES_SH:-${REPO_ROOT}/scripts/arches.sh}"
 
 [ -f "${PUBLISH_ARCH_SH}" ] || die "publish-arch.sh not found: ${PUBLISH_ARCH_SH}"
 
@@ -288,7 +289,7 @@ cmd_assemble() {
     [ -f "${ARCHES_JSON_PATH}" ] || die "assemble: committed arches.json not found at ${ARCHES_JSON_PATH} (set ARCHES_JSON_PATH)"
     _run_core=" $(echo "${_arches_json}" | jq -r '.[] | select((.tier // "core") == "core") | (.name // .)' | tr '\n' ' ')"
     # M4 (code-review finding): "which arches are tier==core" in the
-    # COMMITTED table is scripts/families.sh --tier-arches's own accessor --
+    # COMMITTED table is scripts/arches.sh --tier-arches's own accessor --
     # the single authored place that predicate lives -- not a second
     # `select(.tier == "core")` jq literal here. (`_run_core` above stays a
     # local jq expression: it reads THIS RUN's already-in-memory
@@ -296,7 +297,7 @@ cmd_assemble() {
     # `.tier // "core"` default-to-core is a distinct policy -- rows with no
     # `tier` field at all are still treated as core -- not the same
     # predicate as the committed-table accessor.)
-    _committed_core=$(sh "${FAMILIES_SH}" --tier-arches core "${ARCHES_JSON_PATH}")
+    _committed_core=$(sh "${ARCHES_SH}" --tier-arches core "${ARCHES_JSON_PATH}")
     _missing_core=""
     for _c in ${_committed_core}; do
         case "${_run_core}" in
@@ -321,9 +322,8 @@ cmd_assemble() {
     # the xargs-spawned worker dispatch below to pass --tier through to
     # cmd_worker (S5b bootstrap-force keys off this). A row with no `tier`
     # field defaults to "core" -- the strictest/safest reading, so an input
-    # that predates the tier field (or a bare-string arch list) gets the
-    # conservative all-or-nothing treatment rather than silently becoming
-    # best-effort.
+    # that predates the tier field gets the conservative all-or-nothing
+    # treatment rather than silently becoming best-effort.
     _tier_map=$(mktemp)
     echo "${_arches_json}" | jq -r '.[] | "\(.name // .) \(.tier // "core")"' > "${_tier_map}"
 
@@ -428,11 +428,11 @@ cmd_assemble() {
     # dropped above -- a dropped arch's directory was rm -rf'd, so it was
     # never really published) are in the "unverified" tier: no CI-boot
     # verify:true representative anywhere in their family (D1's
-    # families.sh --unverified-arches, against the SAME committed
+    # arches.sh --unverified-arches, against the SAME committed
     # ARCHES_JSON_PATH the depublish guard already consulted -- the
     # authoritative family/verify data, not just this run's passed-in rows).
     # Purely informational -- NEVER touches assemble's exit status. A
-    # families.sh failure (e.g. a committed table that predates the S7b
+    # arches.sh failure (e.g. a committed table that predates the S7b
     # schema) degrades to "nothing to report" rather than failing the
     # publish over an informational feature.
     _published_names=""
@@ -444,7 +444,7 @@ cmd_assemble() {
     done
 
     _unverified_tier=""
-    if _u=$(sh "${FAMILIES_SH}" --unverified-arches "${ARCHES_JSON_PATH}" 2>/dev/null); then
+    if _u=$(sh "${ARCHES_SH}" --unverified-arches "${ARCHES_JSON_PATH}" 2>/dev/null); then
         _unverified_tier="${_u}"
     fi
     _unverified_space=" "

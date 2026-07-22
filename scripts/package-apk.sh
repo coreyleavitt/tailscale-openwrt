@@ -146,7 +146,7 @@ trap 'rm -rf "${PKGROOT}"' EXIT
 mkdir -p "${PKGROOT}/scripts"
 
 # Format-agnostic on-device tree: the one shared definition (RFC §5.1).
-sh "${STAGE_PAYLOAD}" "${PAYLOAD}" "${PKGROOT}/files" "${BINARY}"
+sh "${STAGE_PAYLOAD}" --src-dir "${PAYLOAD}" --dest-root "${PKGROOT}/files" --binary "${BINARY}"
 
 # apk-specific: conffiles as a real on-device payload file, staged INSIDE
 # files/ at apk's magic path (RFC §4.1 / tests/apk/mkpkg.sh's Q1 note).

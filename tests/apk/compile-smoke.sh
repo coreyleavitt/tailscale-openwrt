@@ -5,7 +5,7 @@
 # M1/S2): cross-compilation needs no qemu (it runs on the amd64 host
 # regardless of target), so this is cheap and distinct from the S7a
 # qemu-boot verify spikes. For EVERY one of the 14 family build tuples
-# (derived the same way scripts/families.sh's --id-for groups them --
+# (derived the same way scripts/arches.sh's --id-for groups them --
 # goarch/goarm/gomips/gomips64/go386), this:
 #   1. `docker build --target build` with SKIP_UPX=1 and all five build-arg
 #      fields sourced from arches.json (no name-based derivation -- see the
@@ -34,7 +34,7 @@
 # Representative arch NAME per family: the family's `core`-tier arch if one
 # exists (so the legacy 4 families smoke-test the EXACT arch name production
 # uses), else the lexicographically-first arch sharing that build tuple
-# (deterministic, content-derived, mirrors families.sh --with-ci's own
+# (deterministic, content-derived, mirrors arches.sh --with-ci's own
 # tie-break rule).
 #
 # Usage:
@@ -48,7 +48,7 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 REPO_ROOT=$(CDPATH= cd -- "${SCRIPT_DIR}/../.." && pwd)
 PKG_DIR="${REPO_ROOT}/tailscale-package"
 ARCHES_JSON="${REPO_ROOT}/arches.json"
-FAMILIES_SH="${REPO_ROOT}/scripts/families.sh"
+ARCHES_SH="${REPO_ROOT}/scripts/arches.sh"
 
 # shellcheck source=tests/apk/lib.sh
 . "${SCRIPT_DIR}/lib.sh"
@@ -140,7 +140,7 @@ while [ "${_i}" -lt "${FAMILY_COUNT}" ]; do
     _gomips64=$(echo "${_row}" | jq -r '.gomips64 // ""')
     _go386=$(echo "${_row}" | jq -r '.go386 // ""')
 
-    _family=$("${FAMILIES_SH}" --id-for "${_goarch}" "${_goarm}" "${_gomips}" "${_gomips64}" "${_go386}") || {
+    _family=$("${ARCHES_SH}" --id-for "${_goarch}" "${_goarm}" "${_gomips}" "${_gomips64}" "${_go386}") || {
         log_fail "arch '${_name}' has an unmapped build tuple (goarch=${_goarch} goarm=${_goarm} gomips=${_gomips} gomips64=${_gomips64} go386=${_go386})"
         continue
     }

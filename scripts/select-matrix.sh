@@ -48,7 +48,7 @@
 #   --verify-families
 #       S7a (RFC §5.6): the qemu-verify / native-arch-install-verify job's
 #       matrix. Non-PR: one row per BOOTABLE family (a family with a
-#       `verify: true` arch row, per scripts/families.sh --with-ci --
+#       `verify: true` arch row, per scripts/arches.sh --with-ci --
 #       today the 10 in RFC §5.6, e.g. A6HF/ASOFT/M32LEHF/RV64 are
 #       genuinely unbootable and excluded, the S7b "unverified" tier).
 #       Each row carries the verify arch NAME + its build tuple +
@@ -76,13 +76,13 @@
 # Family rows (--compile-families) carry:
 #   { "family": "A64", "goarch": "arm64", "goarm": "", "gomips": "",
 #     "gomips64": "", "go386": "", "arches": ["aarch64_cortex-a53", ...] }
-# `family`/the build-tuple fields come from scripts/families.sh
+# `family`/the build-tuple fields come from scripts/arches.sh
 # --compile-families (M5, code-review finding: this mode delegates the
 # gated-rows-to-family-groups transform wholesale, built on the same
 # build_family_rows() grouping --with-ci/--unverified-arches share -- never
 # an independently re-derived grouping loop here), so a family id is never
 # authored twice. `arches` is every gated row's name in that family, sorted
-# (content-derived, not row-order-derived, mirroring families.sh
+# (content-derived, not row-order-derived, mirroring arches.sh
 # --with-ci's own tie-break convention) -- this is what build-apk's in-job
 # packaging loop iterates.
 #
@@ -95,7 +95,14 @@ set -eu
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 REPO_ROOT=$(CDPATH= cd -- "${SCRIPT_DIR}/.." && pwd)
-FAMILIES_SH="${SCRIPT_DIR}/families.sh"
+ARCHES_SH="${SCRIPT_DIR}/arches.sh"
+
+# The single authored place the canary predicate lives (RFC §5.3 round-2
+# P-SEV2/F-SEV2: keyed STRICTLY on `canary == true`, no `container_arch`
+# OR-clause) -- both the PR-event GATE_FILTER below and the --verify-families
+# PR branch's CANARY_NAMES query reference this same jq fragment rather than
+# each spelling out the literal a second time.
+CANARY_PREDICATE='.canary == true'
 
 EVENT_NAME="${1:?usage: select-matrix.sh <event_name> [--ipk-arches|--compile-families|--publish-arches|--verify-families] [arches_json_path]}"
 shift
@@ -118,29 +125,29 @@ fi
 # --ipk-arches, non-PR: RFC non-goal -- ipk must NOT widen, pinned to
 # tier=="core" regardless of the compile_families/publish_arches gate-flip
 # below. M4 (code-review finding): "which arches are tier==core" is
-# scripts/families.sh --tier-arches's own accessor -- the single authored
+# scripts/arches.sh --tier-arches's own accessor -- the single authored
 # place that predicate lives -- not a second `.tier == "core"` jq literal
 # here. Passing the literal string "core" (not some variable computed by
 # the gate-flip logic below) keeps this exactly as pinned/independent of
 # any future compile_families/publish_arches widening as before; only the
 # "which arches are tier==core right now" lookup itself is shared, never
-# reimplemented a 5th time (tests/apk/families.sh's M4 section
+# reimplemented a 5th time (tests/apk/arches.sh's M4 section
 # grep-guards the other four authored sites; this one is proven identical
 # by construction -- it calls the same accessor -- rather than by drift
 # test).
 if [ "${EVENT_NAME}" != "pull_request" ] && [ "${MODE}" = "ipk_arches" ]; then
-    if [ ! -x "${FAMILIES_SH}" ]; then
-        echo "select-matrix.sh: ${FAMILIES_SH} not found or not executable" >&2
+    if [ ! -x "${ARCHES_SH}" ]; then
+        echo "select-matrix.sh: ${ARCHES_SH} not found or not executable" >&2
         exit 1
     fi
-    CORE_NAMES_JSON=$("${FAMILIES_SH}" --tier-arches core "${ARCHES_JSON}" | jq -R . | jq -s .)
+    CORE_NAMES_JSON=$("${ARCHES_SH}" --tier-arches core "${ARCHES_JSON}" | jq -R . | jq -s .)
     jq -c --argjson names "${CORE_NAMES_JSON}" \
         '[.[] | select(.name as $n | $names | index($n) != null)]' "${ARCHES_JSON}"
     exit 0
 fi
 
 if [ "${EVENT_NAME}" = "pull_request" ]; then
-    GATE_FILTER='.canary == true'
+    GATE_FILTER="${CANARY_PREDICATE}"
 else
     case "${MODE}" in
         compile_families | publish_arches)
@@ -158,8 +165,8 @@ if [ "${MODE}" = "ipk_arches" ] || [ "${MODE}" = "publish_arches" ]; then
 fi
 
 # --verify-families (S7a, RFC §5.3/§5.6): the bootable representative per
-# family, from families.sh --with-ci's verify:true-flag-driven view (never
-# re-derived here -- see families.sh's own header comment for why "first
+# family, from arches.sh --with-ci's verify:true-flag-driven view (never
+# re-derived here -- see arches.sh's own header comment for why "first
 # row with a rootfs pin" is the wrong inference). A family with no
 # verify:true row (A6HF/ASOFT/M32LEHF/RV64 today, RFC §5.6's S7b tier) is
 # simply absent from --with-ci's output -- this mode does not second-guess
@@ -175,15 +182,15 @@ fi
 # loudly, if a canary arch's family is missing from the bootable view
 # instead of silently shrinking the PR matrix to zero rows.
 if [ "${MODE}" = "verify_families" ]; then
-    if [ ! -x "${FAMILIES_SH}" ]; then
-        echo "select-matrix.sh: ${FAMILIES_SH} not found or not executable" >&2
+    if [ ! -x "${ARCHES_SH}" ]; then
+        echo "select-matrix.sh: ${ARCHES_SH} not found or not executable" >&2
         exit 1
     fi
 
-    WITH_CI=$("${FAMILIES_SH}" --with-ci "${ARCHES_JSON}")
+    WITH_CI=$("${ARCHES_SH}" --with-ci "${ARCHES_JSON}")
 
     if [ "${EVENT_NAME}" = "pull_request" ]; then
-        CANARY_NAMES=$(jq -c '[.[] | select(.canary == true) | .name]' "${ARCHES_JSON}")
+        CANARY_NAMES=$(jq -c "[.[] | select(${CANARY_PREDICATE}) | .name]" "${ARCHES_JSON}")
 
         MISSING_CANARY=$(jq -n --argjson names "${CANARY_NAMES}" --argjson rows "${WITH_CI}" \
             '[$names[] as $n | select(([$rows[] | select(.verify == $n)] | length) == 0) | $n]')
@@ -204,15 +211,15 @@ fi
 
 # --compile-families from here down. M5 (code-review finding): the "gated
 # rows -> group by family -> tuple + sorted arch list" transform now
-# delegates WHOLESALE to families.sh --compile-families -- built on the
+# delegates WHOLESALE to arches.sh --compile-families -- built on the
 # exact same build_family_rows() grouping --with-ci/--unverified-arches
 # already share -- the same way --verify-families above delegates to
-# families.sh --with-ci, instead of an independent "iterate rows ->
+# arches.sh --with-ci, instead of an independent "iterate rows ->
 # --id-for per row (a subprocess call per arch) -> group_by" loop
 # reimplemented here.
 
-if [ ! -x "${FAMILIES_SH}" ]; then
-    echo "select-matrix.sh: ${FAMILIES_SH} not found or not executable" >&2
+if [ ! -x "${ARCHES_SH}" ]; then
+    echo "select-matrix.sh: ${ARCHES_SH} not found or not executable" >&2
     exit 1
 fi
 
@@ -221,4 +228,4 @@ GATED_FILE=$(mktemp)
 trap 'rm -f "${GATED_FILE}"' EXIT
 echo "${GATED}" > "${GATED_FILE}"
 
-"${FAMILIES_SH}" --compile-families "${GATED_FILE}"
+"${ARCHES_SH}" --compile-families "${GATED_FILE}"

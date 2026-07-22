@@ -132,7 +132,7 @@ echo "=== per-arch exec check ==="
 # event-conditionally the same way every other select-matrix mode is --
 # not the raw 35-row table, and no longer just the 4 tier==core arches
 # (RFC §5.6's widened CI-verify scope). Rows carry `.verify` as the arch
-# NAME field (families.sh --with-ci's own naming), not `.name`.
+# NAME field (arches.sh --with-ci's own naming), not `.name`.
 VERIFY_ARCHES=$("${SELECT_MATRIX}" workflow_dispatch --verify-families "${ARCHES_JSON}")
 COUNT=$(echo "${VERIFY_ARCHES}" | jq 'length')
 i=0

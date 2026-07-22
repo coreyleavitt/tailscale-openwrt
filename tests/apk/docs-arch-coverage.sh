@@ -7,7 +7,7 @@
 # stale "currently 4 arches" claim to the real 30-arch/14-family coverage,
 # and introduced a drift-prone list (the "unverified tier" -- feasible
 # arches that are published but never CI-boot-verified) that has exactly
-# one authoritative source: `scripts/families.sh --unverified-arches`. This
+# one authoritative source: `scripts/arches.sh --unverified-arches`. This
 # is the test that keeps the doc copy of that list from silently rotting,
 # the same way tests/apk/install-arch-block.sh's Part D keeps the
 # infeasible-arch install.sh block honest.
@@ -17,7 +17,7 @@
 #
 # Covers:
 #   A. The unverified-tier arch list embedded in docs/INSTALL.md (between
-#      the BEGIN/END markers) matches `scripts/families.sh
+#      the BEGIN/END markers) matches `scripts/arches.sh
 #      --unverified-arches` exactly (as a set -- order is not asserted,
 #      since neither the doc nor the script promises one). A2 is the
 #      RED-proof control: the exact same comparison, run against a
@@ -41,7 +41,7 @@ set -eu
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 REPO_ROOT=$(CDPATH= cd -- "${SCRIPT_DIR}/../.." && pwd)
-FAMILIES_SH="${REPO_ROOT}/scripts/families.sh"
+ARCHES_SH="${REPO_ROOT}/scripts/arches.sh"
 ARCHES_JSON="${REPO_ROOT}/arches.json"
 README="${REPO_ROOT}/README.md"
 INSTALL_MD="${REPO_ROOT}/docs/INSTALL.md"
@@ -52,7 +52,7 @@ MAINTAINING_MD="${REPO_ROOT}/docs/MAINTAINING.md"
 
 require_cmd jq
 
-for f in "${FAMILIES_SH}" "${ARCHES_JSON}" "${README}" "${INSTALL_MD}" "${MAINTAINING_MD}"; do
+for f in "${ARCHES_SH}" "${ARCHES_JSON}" "${README}" "${INSTALL_MD}" "${MAINTAINING_MD}"; do
     if [ ! -f "${f}" ]; then
         echo "FAIL: required file not found: ${f}" >&2
         exit 1
@@ -68,7 +68,7 @@ trap cleanup EXIT
 # =====================================================================
 echo ""
 echo "############################################"
-echo "### Part A: unverified-tier list matches scripts/families.sh --unverified-arches"
+echo "### Part A: unverified-tier list matches scripts/arches.sh --unverified-arches"
 echo "############################################"
 
 extract_unverified_block() {
@@ -95,15 +95,15 @@ doc_matches_expected() {
 }
 
 DOC_UNVERIFIED=$(extract_unverified_block "${INSTALL_MD}")
-EXPECTED_UNVERIFIED=$("${FAMILIES_SH}" --unverified-arches "${ARCHES_JSON}")
+EXPECTED_UNVERIFIED=$("${ARCHES_SH}" --unverified-arches "${ARCHES_JSON}")
 
 assert_eq "A1: docs/INSTALL.md actually contains a non-empty unverified-tier block" \
     "1" "$([ -n "${DOC_UNVERIFIED}" ] && echo 1 || echo 0)"
 
 if [ "$(doc_matches_expected "${DOC_UNVERIFIED}" "${EXPECTED_UNVERIFIED}")" = "MATCH" ]; then
-    log_info "OK: A2 (GREEN): docs/INSTALL.md unverified-tier list matches families.sh --unverified-arches exactly"
+    log_info "OK: A2 (GREEN): docs/INSTALL.md unverified-tier list matches arches.sh --unverified-arches exactly"
 else
-    log_fail "A2: docs/INSTALL.md unverified-tier list has DRIFTED from families.sh --unverified-arches -- regenerate the list between the BEGIN/END markers"
+    log_fail "A2: docs/INSTALL.md unverified-tier list has DRIFTED from arches.sh --unverified-arches -- regenerate the list between the BEGIN/END markers"
     printf '%s\n' "${DOC_UNVERIFIED}" | sort -u > "${WORKDIR}/a2-doc.txt"
     printf '%s\n' "${EXPECTED_UNVERIFIED}" | sort -u > "${WORKDIR}/a2-expected.txt"
     diff "${WORKDIR}/a2-doc.txt" "${WORKDIR}/a2-expected.txt" >&2 || true

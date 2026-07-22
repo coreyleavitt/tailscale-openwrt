@@ -2,7 +2,7 @@ name: Fast Tests (Schema Guard + Pure-sh/jq Suites)
 
 # H3 (code-review finding, docs/rfc-apk-arch-coverage.md §5.2 "a typo hard-
 # fails CI, not the feed"): before this workflow existed, NOTHING in CI ever
-# ran `families.sh --validate` or almost any of tests/apk/* -- a bad
+# ran `arches.sh --validate` or almost any of tests/apk/* -- a bad
 # arches.json edit (a typo'd enum, an unmapped tuple, a shell-unsafe
 # `.name`, ...) went straight through to the 14-family docker build matrix
 # and a live feed publish with zero gate. This workflow is that gate: on
@@ -54,11 +54,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: families.sh --validate (arches.json schema guard -- M1's .name charclass check lives here)
-        run: sh scripts/families.sh --validate
+      - name: arches.sh --validate (arches.json schema guard -- M1's .name charclass check lives here)
+        run: sh scripts/arches.sh --validate
 
-      - name: tests/apk/families.sh
-        run: sh tests/apk/families.sh
+      - name: tests/apk/arches.sh
+        run: sh tests/apk/arches.sh
 
       - name: tests/apk/select-matrix.sh
         run: sh tests/apk/select-matrix.sh
@@ -83,6 +83,9 @@ jobs:
 
       - name: tests/apk/dockerfile-goarch-drift.sh
         run: sh tests/apk/dockerfile-goarch-drift.sh
+
+      - name: tests/apk/stage-payload.sh
+        run: sh tests/apk/stage-payload.sh
 
   compile-negative:
     # Separate job (docker + network dependency -- see file header above):

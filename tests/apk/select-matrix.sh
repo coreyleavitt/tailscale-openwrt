@@ -13,10 +13,10 @@
 #   --publish-arches         -- same S5a gate-flip, flat per-arch shape.
 #   --verify-families        -- S7a: one row per BOOTABLE family (a family
 #                                with a native_verify:true arch, per
-#                                families.sh --with-ci), event-conditional.
+#                                arches.sh --with-ci), event-conditional.
 #
 # No docker/qemu needed -- pure jq/shell, exercising the real (committed)
-# arches.json directly, the same style as tests/apk/families.sh.
+# arches.json directly, the same style as tests/apk/arches.sh.
 #
 # Covers:
 #   1. THE HAZARD, proven directly: naively dumping the widened arches.json
@@ -203,7 +203,7 @@ assert_eq "--compile-families' arch lists sum to exactly 30 (all feasible arches
 
 echo
 
-echo "=== --compile-families: each family's build tuple matches families.sh --id-for ==="
+echo "=== --compile-families: each family's build tuple matches arches.sh --id-for ==="
 
 for fam in A64 ASOFT M32BE M32LE A6HF A7HF AMD64 LOONG64 M32LEHF M64BE M64LE RV64 X86SOFT X86SSE2; do
     ROW=$(echo "${FAMILIES_JSON}" | jq -c --arg f "${fam}" '.[] | select(.family == $f)')
@@ -212,8 +212,8 @@ for fam in A64 ASOFT M32BE M32LE A6HF A7HF AMD64 LOONG64 M32LEHF M64BE M64LE RV6
     GOMIPS=$(echo "${ROW}" | jq -r '.gomips')
     GOMIPS64=$(echo "${ROW}" | jq -r '.gomips64')
     GO386=$(echo "${ROW}" | jq -r '.go386')
-    DERIVED=$(sh "${REPO_ROOT}/scripts/families.sh" --id-for "${GOARCH}" "${GOARM}" "${GOMIPS}" "${GOMIPS64}" "${GO386}")
-    assert_eq "family ${fam}: its own build tuple re-derives to ${fam} via families.sh --id-for" \
+    DERIVED=$(sh "${REPO_ROOT}/scripts/arches.sh" --id-for "${GOARCH}" "${GOARM}" "${GOMIPS}" "${GOMIPS64}" "${GO386}")
+    assert_eq "family ${fam}: its own build tuple re-derives to ${fam} via arches.sh --id-for" \
         "${fam}" "${DERIVED}"
 done
 

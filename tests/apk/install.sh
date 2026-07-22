@@ -103,7 +103,7 @@
 # select-matrix.sh --verify-families) uses. Default (unset/0): unchanged
 # override behavior, for the existing ipk_arches-scoped multi-arch coverage
 # (aarch64_cortex-a53/arm_cortex-a7 are not their own family's true native
-# match -- see scripts/families.sh --with-ci's header comment -- so that
+# match -- see scripts/arches.sh --with-ci's header comment -- so that
 # coverage still needs the override to install at all).
 #
 # Usage:
@@ -331,7 +331,7 @@ install_verify_one() {
     # (tests/apk/lib.sh) -- kept for the existing ipk_arches-scoped
     # multi-arch install coverage, which genuinely needs it (aarch64_cortex-
     # a53/arm_cortex-a7 are NOT their own family's true native match --
-    # see families.sh --with-ci's header comment).
+    # see arches.sh --with-ci's header comment).
     NATIVE_ARCH_LINE=$(docker exec "${TARGET_CID}" cat /etc/apk/arch)
     if [ "${INSTALL_NATIVE_ONLY:-0}" = "1" ]; then
         if ! native_arch_matches "${NATIVE_ARCH_LINE}" "${ARCH}"; then

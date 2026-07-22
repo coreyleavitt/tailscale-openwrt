@@ -1,12 +1,12 @@
 #!/bin/sh
-# scripts/families.sh
+# scripts/arches.sh
 #
 # Slice S1a (RFC docs/rfc-apk-arch-coverage.md §5.2): "family" is a
 # COMPUTED grouping key over each arch row's own build tuple
 # (goarch/goarm/gomips/gomips64/go386), never an authored foreign key.
 # This script is the single place that mnemonic table lives:
 #
-#   families.sh --id-for <goarch> <goarm> <gomips> <gomips64> <go386>
+#   arches.sh --id-for <goarch> <goarm> <gomips> <gomips64> <go386>
 #       Pure function: build tuple -> stable mnemonic family id (one of
 #       the 14 in the RFC §4 table). Content-derived, insertion-order-
 #       independent by construction (no positional/group_by ordering is
@@ -15,7 +15,7 @@
 #       of the 14 known families -- a new family is a deliberate, reviewed
 #       addition to the case statement below, never a silent generic id.
 #
-#   families.sh --with-ci [arches.json]
+#   arches.sh --with-ci [arches.json]
 #       Emits one JSON row per BOOTABLE family present in arches.json (a
 #       family with at least one `native_verify: true` row) -- an
 #       UNVERIFIABLE family (S7a/RFC §5.6's S7b tier: A6HF/ASOFT/M32LEHF/
@@ -66,7 +66,7 @@
 #       a `native_verify: true` row must carry a real rootfs pin, (2) at
 #       most one `native_verify: true` row per family, and (3) a row MAY
 #       carry a rootfs pin with `native_verify: false` -- legal, and
-#       exactly the core-ARM case (tests/apk/families.sh's M8 section
+#       exactly the core-ARM case (tests/apk/arches.sh's M8 section
 #       asserts --validate accepts this on the real table, not just that
 #       the two failure modes are rejected).
 #
@@ -74,7 +74,7 @@
 #       single family has MORE than one `native_verify: true` row, or if a
 #       `native_verify: true` row does not itself carry a real rootfs pin.
 #
-#   families.sh --unverified-arches [arches.json]
+#   arches.sh --unverified-arches [arches.json]
 #       S7b (RFC §5.6/§Slices S7b): the complement of --with-ci at arch
 #       granularity. Emits, one per line, every FEASIBLE (`reason == null`)
 #       arch NAME whose computed family has NO `native_verify: true` row
@@ -93,7 +93,7 @@
 #       `cmd_assemble` logs the intersection of this set with the run's
 #       actually-published arches (S7b's named log() acceptance criterion).
 #
-#   families.sh --tier-arches <tier> [arches.json]
+#   arches.sh --tier-arches <tier> [arches.json]
 #       M4 (code-review finding): the single accessor for "every arch name
 #       whose own `tier` field equals <tier>", sorted for a stable diff.
 #       Before this existed, `select(.tier == "core") | .name` was hand-
@@ -102,13 +102,13 @@
 #       guard, .github/workflows/build-tailscale.yaml's two republish-feed
 #       loops) -- a future redefinition of "core" needed four synchronized
 #       edits, with nothing to catch a missed one. All four now route
-#       through this accessor (tests/apk/families.sh's M4 section
+#       through this accessor (tests/apk/arches.sh's M4 section
 #       grep-guards that no authored `select(.tier == "core")` string
 #       remains at any of those sites). Hard-fails on an unknown <tier>
 #       (not one of core|extended|infeasible) rather than silently
 #       returning an empty set.
 #
-#   families.sh --resolve-republish-arches <allowlist> [arches.json]
+#   arches.sh --resolve-republish-arches <allowlist> [arches.json]
 #       RFC §5.8 "Rollback" (round-2 B-SEV2): the resolve+validate seam for
 #       `republish-feed`'s optional `republish_arches` workflow_dispatch
 #       input (a raw, operator-typed string) -- kept here, not a separate
@@ -136,7 +136,7 @@
 #           (e.g. powerpc_8548 -- reason != null, Go cannot build it, never
 #           a republish target), or
 #         - a token that doesn't match the safe arch-name charclass
-#           `^[a-z0-9][a-z0-9_.-]*$` families.sh --validate already
+#           `^[a-z0-9][a-z0-9_.-]*$` arches.sh --validate already
 #           enforces on every real row's `.name` (M1) -- checked
 #           explicitly here too, BEFORE the membership check, since this
 #           command's own stdout is what build-tailscale.yaml's
@@ -149,7 +149,7 @@
 #           shape check gives a precise, fast diagnostic instead of a
 #           generic "not feasible".)
 #
-#   families.sh --compile-families [arches.json]
+#   arches.sh --compile-families [arches.json]
 #       M5 (code-review finding): given an arches.json-shaped array (the
 #       CALLER'S job to have already gated -- e.g.
 #       scripts/select-matrix.sh --compile-families gates to `reason ==
@@ -164,7 +164,7 @@
 #       delegating wholesale the way --verify-families already delegates
 #       to --with-ci).
 #
-#   families.sh --validate [arches.json]
+#   arches.sh --validate [arches.json]
 #       The schema guard (round-2 P-SEV3): every row's build tuple must
 #       map to a known family id (via --id-for; hard-fails on unmapped,
 #       naming the offending arch), and goarch/float/endian/gomips/
@@ -212,13 +212,13 @@
 # POSIX sh only (mirrors scripts/select-matrix.sh's style/no-bashisms).
 #
 # Usage:
-#   scripts/families.sh --id-for <goarch> <goarm> <gomips> <gomips64> <go386>
-#   scripts/families.sh --with-ci [arches.json]
-#   scripts/families.sh --unverified-arches [arches.json]
-#   scripts/families.sh --tier-arches <tier> [arches.json]
-#   scripts/families.sh --resolve-republish-arches <allowlist> [arches.json]
-#   scripts/families.sh --compile-families [arches.json]
-#   scripts/families.sh --validate [arches.json]
+#   scripts/arches.sh --id-for <goarch> <goarm> <gomips> <gomips64> <go386>
+#   scripts/arches.sh --with-ci [arches.json]
+#   scripts/arches.sh --unverified-arches [arches.json]
+#   scripts/arches.sh --tier-arches <tier> [arches.json]
+#   scripts/arches.sh --resolve-republish-arches <allowlist> [arches.json]
+#   scripts/arches.sh --compile-families [arches.json]
+#   scripts/arches.sh --validate [arches.json]
 
 set -eu
 
@@ -228,13 +228,13 @@ REPO_ROOT=$(CDPATH= cd -- "${SCRIPT_DIR}/.." && pwd)
 usage() {
     cat >&2 <<'EOF'
 Usage:
-  families.sh --id-for <goarch> <goarm> <gomips> <gomips64> <go386>
-  families.sh --with-ci [arches.json]
-  families.sh --unverified-arches [arches.json]
-  families.sh --tier-arches <tier> [arches.json]
-  families.sh --resolve-republish-arches <allowlist> [arches.json]
-  families.sh --compile-families [arches.json]
-  families.sh --validate [arches.json]
+  arches.sh --id-for <goarch> <goarm> <gomips> <gomips64> <go386>
+  arches.sh --with-ci [arches.json]
+  arches.sh --unverified-arches [arches.json]
+  arches.sh --tier-arches <tier> [arches.json]
+  arches.sh --resolve-republish-arches <allowlist> [arches.json]
+  arches.sh --compile-families [arches.json]
+  arches.sh --validate [arches.json]
 EOF
 }
 
@@ -266,7 +266,7 @@ id_for() {
         "riscv64::::")           echo "RV64" ;;
         "loong64::::")           echo "LOONG64" ;;
         *)
-            echo "families.sh: unmapped build tuple (goarch='${_goarch}' goarm='${_goarm}' gomips='${_gomips}' gomips64='${_gomips64}' go386='${_go386}') -- not one of the 14 known families" >&2
+            echo "arches.sh: unmapped build tuple (goarch='${_goarch}' goarm='${_goarm}' gomips='${_gomips}' gomips64='${_gomips64}' go386='${_go386}') -- not one of the 14 known families" >&2
             return 1
             ;;
     esac
@@ -275,6 +275,24 @@ id_for() {
 cmd_id_for() {
     [ $# -eq 5 ] || { usage; exit 1; }
     id_for "$1" "$2" "$3" "$4" "$5"
+}
+
+# extract_tuple <row-json>
+#
+# Sets _goarch/_goarm/_gomips/_gomips64/_go386 from a single row's JSON.
+# The 5-field build-tuple list (goarch/goarm/gomips/gomips64/go386, each
+# `// ""` so an absent field reads as the empty string id_for expects) is
+# extracted independently by build_family_rows and cmd_validate; this is the
+# one place that field list lives, so the two call sites can never drift
+# apart on it.
+extract_tuple() {
+    _tuple_row="$1"
+
+    _goarch=$(echo "${_tuple_row}" | jq -r '.goarch // ""')
+    _goarm=$(echo "${_tuple_row}" | jq -r '.goarm // ""')
+    _gomips=$(echo "${_tuple_row}" | jq -r '.gomips // ""')
+    _gomips64=$(echo "${_tuple_row}" | jq -r '.gomips64 // ""')
+    _go386=$(echo "${_tuple_row}" | jq -r '.go386 // ""')
 }
 
 # build_family_rows <arches.json> <out-file>
@@ -313,14 +331,10 @@ build_family_rows() {
             continue
         fi
 
-        _goarch=$(echo "${_row}" | jq -r '.goarch // ""')
-        _goarm=$(echo "${_row}" | jq -r '.goarm // ""')
-        _gomips=$(echo "${_row}" | jq -r '.gomips // ""')
-        _gomips64=$(echo "${_row}" | jq -r '.gomips64 // ""')
-        _go386=$(echo "${_row}" | jq -r '.go386 // ""')
+        extract_tuple "${_row}"
 
         _family=$(id_for "${_goarch}" "${_goarm}" "${_gomips}" "${_gomips64}" "${_go386}") || {
-            echo "families.sh: arch '${_name}' has an unmapped build tuple" >&2
+            echo "arches.sh: arch '${_name}' has an unmapped build tuple" >&2
             exit 1
         }
 
@@ -361,7 +375,7 @@ build_family_rows() {
 cmd_with_ci() {
     _arches_json="${1:-${REPO_ROOT}/arches.json}"
     if [ ! -f "${_arches_json}" ]; then
-        echo "families.sh: ${_arches_json} not found" >&2
+        echo "arches.sh: ${_arches_json} not found" >&2
         exit 1
     fi
 
@@ -387,12 +401,12 @@ cmd_with_ci() {
             | ($rows[0].family) as $family
             | ([$rows[] | select(.native_verify_flag)]) as $marked
             | if ($marked | length) > 1
-              then error("families.sh --with-ci: family " + $family + " has more than one native_verify:true arch (" + ([$marked[].name] | join(", ")) + ")")
+              then error("arches.sh --with-ci: family " + $family + " has more than one native_verify:true arch (" + ([$marked[].name] | join(", ")) + ")")
               elif ($marked | length) == 0
               then empty
               else $marked[0] as $v
                 | if ($v.bootable | not)
-                  then error("families.sh --with-ci: family " + $family + "'"'"'s native_verify:true arch (" + $v.name + ") does not carry a real rootfs pin")
+                  then error("arches.sh --with-ci: family " + $family + "'"'"'s native_verify:true arch (" + $v.name + ") does not carry a real rootfs pin")
                   else {family: $family, verify: $v.name,
                         rootfs_target: $v.rootfs_target, rootfs_url: $v.rootfs_url, rootfs_sha256: $v.rootfs_sha256,
                         container_arch: $v.container_arch,
@@ -407,7 +421,7 @@ cmd_with_ci() {
 cmd_unverified_arches() {
     _arches_json="${1:-${REPO_ROOT}/arches.json}"
     if [ ! -f "${_arches_json}" ]; then
-        echo "families.sh: ${_arches_json} not found" >&2
+        echo "arches.sh: ${_arches_json} not found" >&2
         exit 1
     fi
 
@@ -420,7 +434,7 @@ cmd_unverified_arches() {
     # families with ZERO native_verify:true rows (the unverified tier), then
     # flatten to just their arch names, one per line, sorted for a stable
     # diff. Deliberately does NOT duplicate --with-ci's ">1 native_verify:true"
-    # hard-fail (that schema violation is families.sh --validate's job); this
+    # hard-fail (that schema violation is arches.sh --validate's job); this
     # view only cares whether a family has any verified representative at all.
     jq -s -r '
         group_by(.family)
@@ -439,13 +453,13 @@ cmd_tier_arches() {
     case "${_tier}" in
         core|extended|infeasible) ;;
         *)
-            echo "families.sh --tier-arches: '${_tier}' is not a known tier (core|extended|infeasible)" >&2
+            echo "arches.sh --tier-arches: '${_tier}' is not a known tier (core|extended|infeasible)" >&2
             exit 1
             ;;
     esac
 
     if [ ! -f "${_arches_json}" ]; then
-        echo "families.sh: ${_arches_json} not found" >&2
+        echo "arches.sh: ${_arches_json} not found" >&2
         exit 1
     fi
 
@@ -464,7 +478,7 @@ cmd_resolve_republish_arches() {
     _resolve_arches_json="${2:-${REPO_ROOT}/arches.json}"
 
     if [ ! -f "${_resolve_arches_json}" ]; then
-        echo "families.sh: ${_resolve_arches_json} not found" >&2
+        echo "arches.sh: ${_resolve_arches_json} not found" >&2
         exit 1
     fi
 
@@ -494,19 +508,19 @@ cmd_resolve_republish_arches() {
         # M1-equivalent shape guard, checked BEFORE membership: this
         # command's stdout is spliced into a shell `for arch in ...` in
         # build-tailscale.yaml's republish-feed loops, the exact same
-        # injection surface families.sh --validate's M1 section closes for
+        # injection surface arches.sh --validate's M1 section closes for
         # arches.json's own `.name` field. A shape violation can never
         # equal a real feasible name anyway (every real name already
         # passes this same charclass, per --validate), but checking it
         # explicitly gives a precise diagnostic instead of a generic "not
         # feasible" for an obviously-malicious token.
         if ! printf '%s' "${_tok}" | grep -Eq '^[a-z0-9][a-z0-9_.-]*$'; then
-            echo "families.sh --resolve-republish-arches: '${_tok}' does not match the safe arch-name shape ^[a-z0-9][a-z0-9_.-]*\$ -- refusing (this name is echoed verbatim into a shell loop downstream, e.g. build-tailscale.yaml's republish-feed loops)" >&2
+            echo "arches.sh --resolve-republish-arches: '${_tok}' does not match the safe arch-name shape ^[a-z0-9][a-z0-9_.-]*\$ -- refusing (this name is echoed verbatim into a shell loop downstream, e.g. build-tailscale.yaml's republish-feed loops)" >&2
             exit 1
         fi
 
         if ! grep -Fxq -- "${_tok}" "${_feasible_file}"; then
-            echo "families.sh --resolve-republish-arches: '${_tok}' is not a known FEASIBLE arch (tier core or extended) in ${_resolve_arches_json} -- refusing to republish an unknown or infeasible-tier arch name" >&2
+            echo "arches.sh --resolve-republish-arches: '${_tok}' is not a known FEASIBLE arch (tier core or extended) in ${_resolve_arches_json} -- refusing to republish an unknown or infeasible-tier arch name" >&2
             exit 1
         fi
 
@@ -526,7 +540,7 @@ cmd_resolve_republish_arches() {
 cmd_compile_families() {
     _arches_json="${1:-${REPO_ROOT}/arches.json}"
     if [ ! -f "${_arches_json}" ]; then
-        echo "families.sh: ${_arches_json} not found" >&2
+        echo "arches.sh: ${_arches_json} not found" >&2
         exit 1
     fi
 
@@ -553,10 +567,38 @@ cmd_compile_families() {
     ' "${_rows_file}"
 }
 
+# reject_ctrl_or_nl <value> <newline-fail-msg> <ctrl-fail-msg>
+#
+# R2a: shared embedded-newline / other-control-character rejection, used by
+# cmd_validate for both `.name` and `.reason`. A `grep -Eq` line-anchored
+# charclass match (the name-shape check above it) is satisfied if ANY line
+# of a multi-line value matches, so a crafted value could otherwise slip a
+# control-character-laden remainder past a single-line check undetected;
+# this is the defense-in-depth check that catches that directly. Prints
+# <newline-fail-msg> to stderr (prefixed "FAIL: ") and returns 1 if <value>
+# contains an embedded newline; prints <ctrl-fail-msg> (same prefix) and
+# returns 1 if it contains any other control character; otherwise returns 0
+# and prints nothing. Callers own their own exact message text (so each
+# field's diagnostic wording is unchanged) and their own `_fail=1`
+# bookkeeping.
+reject_ctrl_or_nl() {
+    _rcn_value="$1"; _rcn_newline_msg="$2"; _rcn_ctrl_msg="$3"
+
+    _rcn_newlines=$(printf '%s' "${_rcn_value}" | wc -l | tr -d ' ')
+    if [ "${_rcn_newlines}" != "0" ]; then
+        echo "FAIL: ${_rcn_newline_msg}" >&2
+        return 1
+    elif printf '%s' "${_rcn_value}" | LC_ALL=C grep -q '[[:cntrl:]]'; then
+        echo "FAIL: ${_rcn_ctrl_msg}" >&2
+        return 1
+    fi
+    return 0
+}
+
 cmd_validate() {
     _arches_json="${1:-${REPO_ROOT}/arches.json}"
     if [ ! -f "${_arches_json}" ]; then
-        echo "families.sh: ${_arches_json} not found" >&2
+        echo "arches.sh: ${_arches_json} not found" >&2
         exit 1
     fi
 
@@ -600,12 +642,10 @@ cmd_validate() {
         # if ANY line of a multi-line value matches, so a crafted name whose
         # first line is innocuous could otherwise slip a control-character-
         # laden remainder past it undetected).
-        _name_newlines=$(printf '%s' "${_raw_name}" | wc -l | tr -d ' ')
-        if [ "${_name_newlines}" != "0" ]; then
-            echo "FAIL: ${_name}: name '${_raw_name}' contains an embedded newline -- must be a single line" >&2
-            _fail=1
-        elif printf '%s' "${_raw_name}" | LC_ALL=C grep -q '[[:cntrl:]]'; then
-            echo "FAIL: ${_name}: name '${_raw_name}' contains a control character -- must be a single clean printable-ASCII token" >&2
+        if ! reject_ctrl_or_nl "${_raw_name}" \
+            "${_name}: name '${_raw_name}' contains an embedded newline -- must be a single line" \
+            "${_name}: name '${_raw_name}' contains a control character -- must be a single clean printable-ASCII token"
+        then
             _fail=1
         fi
 
@@ -617,21 +657,15 @@ cmd_validate() {
         # relied on the generator alone to defend against.
         _raw_reason=$(echo "${_row}" | jq -r '.reason // empty')
         if [ -n "${_raw_reason}" ]; then
-            _reason_newlines=$(printf '%s' "${_raw_reason}" | wc -l | tr -d ' ')
-            if [ "${_reason_newlines}" != "0" ]; then
-                echo "FAIL: ${_name}: reason contains an embedded newline -- must be a single printable line" >&2
-                _fail=1
-            elif printf '%s' "${_raw_reason}" | LC_ALL=C grep -q '[[:cntrl:]]'; then
-                echo "FAIL: ${_name}: reason contains a control character -- must be a single clean printable-ASCII line" >&2
+            if ! reject_ctrl_or_nl "${_raw_reason}" \
+                "${_name}: reason contains an embedded newline -- must be a single printable line" \
+                "${_name}: reason contains a control character -- must be a single clean printable-ASCII line"
+            then
                 _fail=1
             fi
         fi
 
-        _goarch=$(echo "${_row}" | jq -r '.goarch // ""')
-        _goarm=$(echo "${_row}" | jq -r '.goarm // ""')
-        _gomips=$(echo "${_row}" | jq -r '.gomips // ""')
-        _gomips64=$(echo "${_row}" | jq -r '.gomips64 // ""')
-        _go386=$(echo "${_row}" | jq -r '.go386 // ""')
+        extract_tuple "${_row}"
         _endian=$(echo "${_row}" | jq -r '.endian // ""')
         _float=$(echo "${_row}" | jq -r '.float // ""')
         _tier=$(echo "${_row}" | jq -r '.tier // ""')
@@ -808,10 +842,10 @@ cmd_validate() {
     fi
 
     if [ "${_fail}" -ne 0 ]; then
-        echo "families.sh --validate: FAILED" >&2
+        echo "arches.sh --validate: FAILED" >&2
         exit 1
     fi
-    echo "families.sh --validate: OK (${_count} row(s), ${_family_count} families, all tuples mapped, all enums valid)"
+    echo "arches.sh --validate: OK (${_count} row(s), ${_family_count} families, all tuples mapped, all enums valid)"
 }
 
 MODE="${1:-}"

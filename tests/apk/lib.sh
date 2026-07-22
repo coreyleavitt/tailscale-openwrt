@@ -86,7 +86,7 @@ apk_arch_override_line() {
 # INSTALL_NATIVE_ONLY=1 uses in tests/apk/install.sh instead of
 # apk_arch_override_line -- a family whose verify_families representative
 # genuinely IS the native arch (every S7a-pinned family, by construction --
-# see scripts/families.sh --with-ci) passes this without any override; a
+# see scripts/arches.sh --with-ci) passes this without any override; a
 # mismatch here is exactly the class of bug D2 removes the override to catch
 # (e.g. arm_cortex-a7 against armsr/armv7's native arm_cortex-a15_neon-vfpv4).
 native_arch_matches() {

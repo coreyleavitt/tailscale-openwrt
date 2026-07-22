@@ -680,7 +680,7 @@ echo
 echo "=== 10. S7b: assemble logs which PUBLISHED arches are in the unverified tier ==="
 
 # A richer committed-table fixture (real arches.json shape -- goarch/
-# native_verify/reason, not just name+tier) so scripts/families.sh
+# native_verify/reason, not just name+tier) so scripts/arches.sh
 # --unverified-arches can actually compute family grouping against it, per
 # the RFC's "consult the committed table via ARCHES_JSON_PATH ... reuse
 # D1's query" requirement. core-v1 is a boot-verified family (A64-shaped
@@ -688,7 +688,7 @@ echo "=== 10. S7b: assemble logs which PUBLISHED arches are in the unverified ti
 # DIFFERENT unverified families (riscv64 -> RV64-shaped, arm/goarm=6 ->
 # A6HF-shaped) -- neither has any native_verify:true row anywhere in this
 # table. (M8: field renamed from `verify` to `native_verify` -- see
-# scripts/families.sh's header comment for why.)
+# scripts/arches.sh's header comment for why.)
 ARCHES_JSON_PATH_10="${WORKDIR}/arches-committed-10.json"
 jq -n '[
     {name:"core-v1", goarch:"arm64", goarm:"", gomips:"", gomips64:"", go386:"",

@@ -13,7 +13,7 @@
 > weak. Key changes: (1) the mnemonic **family id is now a tested pure function**
 > with a hard-fail on unmapped tuples + a `families==14` / vocab-enum CI assertion
 > (§5.2) — positional `group_by` ids were insertion-order-fragile. (2) **CI-policy
-> is lifted off the per-arch row into a derived `families.sh` view** with an
+> is lifted off the per-arch row into a derived `arches.sh` view** with an
 > "exactly one bootable `verify` per family" invariant (§5.2). (3) A per-arch
 > **`tier` field (`core` | `extended` | `infeasible`)** now unifies three concerns
 > that round 1 had as separate ad-hoc mechanisms: **publish atomicity domain**
@@ -198,7 +198,7 @@ carrying its own raw tuple and *per-arch* facts only:
   sort, so a *positional* id assignment silently renames every family after a
   newly-inserted tuple — renaming compile jobs, `apk-<family>` artifacts, and any
   cross-run correlation (re-run-failed-jobs, an S5 checkpoint). Instead
-  `scripts/families.sh --id-for <goarch> <goarm> <gomips> <gomips64> <go386>`
+  `scripts/arches.sh --id-for <goarch> <goarm> <gomips> <gomips64> <go386>`
   is a small pure function mapping a build tuple → a stable mnemonic, which:
   1. **hard-fails** on an unmapped tuple (mirrors S2's Dockerfile negative test —
      a new family must be a deliberate, reviewed addition, never a silent generic);
@@ -216,7 +216,7 @@ carrying its own raw tuple and *per-arch* facts only:
   per-*family* facts ("the CI-boot representative for family X"), not build-tuple
   facts — smearing them across 30 rows (mostly null) invents an unenforced
   "exactly one verify row per family" convention. Instead
-  `scripts/families.sh --with-ci` emits **one row per family (14)** carrying the
+  `scripts/arches.sh --with-ci` emits **one row per family (14)** carrying the
   boot representative + rootfs pin. That view is where two structural invariants
   live: **(a) exactly one `verify` arch per family, and (b) it MUST be a bootable
   arch string** (e.g. `mips64_mips64r2`, not `octeonplus`; §5.6). `canary` stays
@@ -233,7 +233,7 @@ carrying its own raw tuple and *per-arch* facts only:
 ### 5.3 Packaging + build fan-out (workflow)
 
 One matrix over the **14 families** (compile). **Within each family's job**, a
-plain shell loop over that family's arches (derived via `families.sh`) calls
+plain shell loop over that family's arches (derived via `arches.sh`) calls
 `package-apk.sh`, uploading arch-namespaced `apk-<archname>` artifacts — no second
 matrix stage, no redundant artifact re-fetch (design F4). Artifact/asset naming
 stays arch-namespaced (`tailscale-<ver>-r<rel>-<archname>.apk`).
@@ -421,7 +421,7 @@ live feed. Two concrete hazards and their gates:
   `build-apk.sh` passing `--build-arg GOARCH` is a silent no-op until S2 adds the
   `ARG`). Split:
   - **S1a** — schema-only: add the v2 fields (`gomips64`/`go386`/`float`/`reason`/
-    `tier`) to the *existing 4 rows*, ship `scripts/families.sh` (id-for +
+    `tier`) to the *existing 4 rows*, ship `scripts/arches.sh` (id-for +
     --with-ci + the family-count/vocab validator) + loader test. No widening, no CI
     rewiring.
   - **S1b** — widen `arches.json` to the 35-row table, all new rows `tier` =
@@ -444,7 +444,7 @@ live feed. Two concrete hazards and their gates:
 ## Slices (for `/tdd`)
 
 - **S1a** — schema-only `arches.json` v2 fields on the existing 4 rows;
-  `scripts/families.sh` (`--id-for` pure fn with hard-fail on unmapped tuple;
+  `scripts/arches.sh` (`--id-for` pure fn with hard-fail on unmapped tuple;
   `--with-ci` families view with the one-bootable-`verify`-per-family invariant;
   a `families==14` + enum-vocab validator) + loader/deriver tests, including an
   **id-stability test** (a row-order shuffle and an added-arch-to-existing-family

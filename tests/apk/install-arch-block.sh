@@ -25,7 +25,7 @@
 #      break out of the GENERATED echo's double-quoted argument.
 #   F. R2 (round-2 code-review finding): a `.reason` containing an embedded
 #      newline -- with an injected, case-arm-shaped payload riding it -- must
-#      not break row parsing or execute; and families.sh --validate rejects
+#      not break row parsing or execute; and arches.sh --validate rejects
 #      the same fixture at the source (R2a).
 #
 # Usage:
@@ -505,17 +505,17 @@ assert_eq "F1: infeasible_reason prints the malicious multi-line reason back LIT
     "${MULTILINE_REASON}" "$(cat "${WORKDIR}/f1.out")"
 
 echo ""
-echo "=== Part F: families.sh --validate rejects the SAME embedded-newline fixture (R2a, at the source) ==="
+echo "=== Part F: arches.sh --validate rejects the SAME embedded-newline fixture (R2a, at the source) ==="
 
 set +e
-sh "${INSTALL_DIR}/families.sh" --validate "${WORKDIR}/malicious-arches-nl.json" >"${WORKDIR}/f2.out" 2>&1
+sh "${INSTALL_DIR}/arches.sh" --validate "${WORKDIR}/malicious-arches-nl.json" >"${WORKDIR}/f2.out" 2>&1
 F2_RC=$?
 set -e
 
 if [ "${F2_RC}" -ne 0 ]; then
-    log_info "OK: families.sh --validate rejects a .reason with an embedded newline"
+    log_info "OK: arches.sh --validate rejects a .reason with an embedded newline"
 else
-    log_fail "families.sh --validate ACCEPTED a .reason with an embedded, injection-shaped newline:
+    log_fail "arches.sh --validate ACCEPTED a .reason with an embedded, injection-shaped newline:
 $(cat "${WORKDIR}/f2.out")"
 fi
 

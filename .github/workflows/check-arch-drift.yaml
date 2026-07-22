@@ -36,7 +36,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write  # read the repo + self-commit the keepalive state file below; nothing else (no build/publish/release access needed -- this job only reads a live index and reports)
+  contents: read  # checkout only -- this job only reads a live index and reports (no build/publish/release access, and no self-commit: check-releases.yaml's own daily keepalive already keeps the repo active well within GitHub's 60-day scheduled-workflow window)
 
 jobs:
   check-arch-drift:
@@ -85,50 +85,3 @@ jobs:
         run: |
           echo "::warning::arch-drift check could not determine drift status (hard fetch/parse error against the live OpenWrt packages index) -- transient network/DNS issue or an unexpected index format. NOT treated as 'in sync' or 'drift'; investigate manually if this repeats."
           cat "${RUNNER_TEMP}/arch-drift-result.log" | scripts/notify-alert.sh "arch-drift: could not determine drift status against the live OpenWrt packages index (hard error, not auto-resolved)"
-
-      # Keepalive (same discipline as check-releases.yaml's own "Record
-      # check state" step): GitHub auto-disables a repo's scheduled
-      # workflows after 60 days of no repository activity. check-releases.yaml
-      # already guarantees a push at least every 14 days via its own daily
-      # cron, so this is a defensive second layer (this workflow's own
-      # record of its last run), not the sole safeguard -- self-commits a
-      # small state file so this workflow's activity is visible in history
-      # too, with the same "meaningful commit when the result changes,
-      # heartbeat if otherwise idle" shape.
-      - name: Record check state (keepalive)
-        run: |
-          mkdir -p state
-          cat > state/last-arch-check.json <<EOF
-          {
-            "checked_utc": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-            "status": "${{ steps.drift.outputs.status }}"
-          }
-          EOF
-
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add state/last-arch-check.json
-
-          AGE_DAYS=$(( ( $(date -u +%s) - $(git log -1 --format=%ct) ) / 86400 ))
-          if git diff --cached --quiet; then
-            if [ "$AGE_DAYS" -lt 14 ]; then
-              echo "State unchanged, repo active ${AGE_DAYS}d ago; nothing to do."
-              exit 0
-            fi
-            echo "State unchanged but repo idle ${AGE_DAYS}d; pushing heartbeat."
-            git commit --allow-empty \
-              -m "chore(arch-drift): keepalive heartbeat (idle ${AGE_DAYS}d)"
-          else
-            git commit \
-              -m "chore(arch-drift): weekly check (${{ steps.drift.outputs.status }})"
-          fi
-
-          for attempt in 1 2 3; do
-            if git pull --rebase origin "${GITHUB_REF_NAME}" && git push; then
-              exit 0
-            fi
-            echo "Push attempt ${attempt} failed; retrying."
-            sleep $(( attempt * 3 ))
-          done
-          echo "ERROR: failed to push state after 3 attempts" >&2
-          exit 1

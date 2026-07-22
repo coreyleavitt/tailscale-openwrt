@@ -145,10 +145,10 @@ else
     # with the migration-safety gate until S5 flips it.
     #
     # M4 (code-review finding): "which arches are tier==core" is
-    # scripts/families.sh --tier-arches's own accessor -- the single
+    # scripts/arches.sh --tier-arches's own accessor -- the single
     # authored place that predicate lives -- not a second `select(.tier ==
     # "core")` jq literal here.
-    for _a in $(sh "${REPO_ROOT}/scripts/families.sh" --tier-arches core "${ARCHES_JSON}"); do
+    for _a in $(sh "${REPO_ROOT}/scripts/arches.sh" --tier-arches core "${ARCHES_JSON}"); do
         build_one "${_a}"
     done
 fi

@@ -42,7 +42,7 @@ if [ ! -f "${ARCHES_JSON}" ]; then
 fi
 
 # escape_for_dq value -- M3 (code-review finding): `.reason` is free-form
-# prose (not charclass-guarded like `.name` -- see scripts/families.sh
+# prose (not charclass-guarded like `.name` -- see scripts/arches.sh
 # --validate's M1 check), and it gets spliced verbatim into a
 # double-quoted `echo "..."` argument in the GENERATED block below. A
 # reason containing `"` breaks OUT of that double-quoted string entirely
@@ -77,7 +77,7 @@ escape_for_dq() {
 # (potentially including a hand-crafted `) touch PWNED ;;`-shaped payload)
 # spliced into the generated case statement as raw, un-escaped shell/case
 # syntax rather than as literal text inside one row's `echo "..."` argument.
-# families.sh --validate now rejects any `.reason`/`.name` containing a
+# arches.sh --validate now rejects any `.reason`/`.name` containing a
 # newline or other control character at the source (R2a), but this
 # generator does not rely on that alone: iterating with `jq -c` (compact,
 # NOT `-r`) keeps every row's JSON string escaping intact, so an embedded

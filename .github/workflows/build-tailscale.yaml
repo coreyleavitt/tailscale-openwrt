@@ -51,7 +51,7 @@ on:
           onto) a single bad arch WITHOUT looping the full arches.json and
           force-downgrading the healthy core arches past the C3
           monotonicity guard. Resolved + hard-validated by
-          scripts/families.sh --resolve-republish-arches
+          scripts/arches.sh --resolve-republish-arches
           (tests/apk/republish-arches.sh): every name must be a real
           FEASIBLE arch (tier core or extended) -- an unknown name or an
           infeasible-tier name (e.g. powerpc_8548) fails the job before
@@ -105,7 +105,7 @@ jobs:
       # hard-fails the whole workflow before any build/publish spend --
       # independent of branch protection configuration.
       - name: Validate arches.json schema
-        run: sh scripts/families.sh --validate
+        run: sh scripts/arches.sh --validate
 
       - name: Select build matrix
         id: select
@@ -162,7 +162,7 @@ jobs:
   # representatives (event-conditional: PR = canary's family only, release/
   # dispatch = all 10; A6HF/ASOFT/M32LEHF/RV64 have no generic upstream
   # rootfs and are excluded, the S7b unverified tier). `matrix.family.verify`
-  # is the arch NAME field (families.sh --with-ci's own naming -- a
+  # is the arch NAME field (arches.sh --with-ci's own naming -- a
   # verify_families row is NOT shaped like an ipk_arches row). loong64 needs
   # no extra binfmt step here: docker/setup-qemu-action@v3 (tonistiigi/binfmt)
   # registers qemu-loongarch64 out of the box (S7a M3 spike, confirmed
@@ -236,7 +236,7 @@ jobs:
   # §5.6/S7a's D2 note: "keep existing multi-arch install coverage that
   # genuinely needs the override in a clearly separate, named path".
   # aarch64_cortex-a53/arm_cortex-a7 (2 of these 4 arches) are NOT their own
-  # family's true native-match arch (families.sh --with-ci resolves A64/
+  # family's true native-match arch (arches.sh --with-ci resolves A64/
   # ASOFT's true representative to aarch64_generic / a DIFFERENT,
   # not-this-family arch respectively) -- widening this job to
   # verify_families instead would silently DROP install-verify coverage for
@@ -1406,7 +1406,7 @@ jobs:
       # on -- empty defaults to the historical tier=="core" set
       # (BEHAVIOR-PRESERVING), non-empty is hard-validated against the
       # FEASIBLE set (tier core or extended) and used EXACTLY as given.
-      # scripts/families.sh --resolve-republish-arches is the single seam
+      # scripts/arches.sh --resolve-republish-arches is the single seam
       # this delegates to (tests/apk/republish-arches.sh exercises it
       # directly, hermetically, outside a live Actions run) -- this step
       # never re-derives the resolve/validate logic inline.
@@ -1434,7 +1434,7 @@ jobs:
           REPUBLISH_ARCHES: ${{ github.event.inputs.republish_arches }}
         run: |
           set -eu
-          sh scripts/families.sh --resolve-republish-arches "${REPUBLISH_ARCHES}" arches.json > republish-arches.txt
+          sh scripts/arches.sh --resolve-republish-arches "${REPUBLISH_ARCHES}" arches.json > republish-arches.txt
           echo "Resolved republish arch set:"
           cat republish-arches.txt
 

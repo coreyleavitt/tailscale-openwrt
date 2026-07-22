@@ -74,7 +74,7 @@ matrix's gate is independent of everything below.
    announcement) before merging step 1.
 4. **Update the docs.** If the retired arch was in the
    [unverified tier](INSTALL.md#unverified-tier) list in `docs/INSTALL.md`,
-   regenerate that list from `scripts/families.sh --unverified-arches`
+   regenerate that list from `scripts/arches.sh --unverified-arches`
    before merging -- `tests/apk/docs-arch-coverage.sh` fails the build if it
    drifts from `arches.json`.
 

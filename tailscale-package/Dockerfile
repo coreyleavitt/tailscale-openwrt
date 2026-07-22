@@ -30,7 +30,10 @@
 #                       GOARCH value.
 #   GOARM             - Go ARM float ABI (e.g. "5" for softfloat, "7" for
 #                       hard-float); from arches.json's per-arch goarm
-#                       field. Only meaningful when GOARCH=arm.
+#                       field. REQUIRED (hard-fail) when GOARCH is arm --
+#                       every arm row in arches.json carries a specific
+#                       value, and this is the same class of live bug fixed
+#                       once for arm_cortex-a7 (see §9).
 #   GOMIPS            - Go MIPS float ABI (e.g. "softfloat"|"hardfloat");
 #                       from arches.json's gomips field. REQUIRED (hard-fail)
 #                       when GOARCH is mips/mipsle -- Go's silent default is
@@ -39,8 +42,10 @@
 #                       field. REQUIRED (hard-fail) when GOARCH is
 #                       mips64/mips64le, same reasoning as GOMIPS above.
 #   GO386             - Go 386 float ABI (e.g. "sse2"|"softfloat"), from
-#                       arches.json's go386 field. Only meaningful when
-#                       GOARCH=386.
+#                       arches.json's go386 field. REQUIRED (hard-fail) when
+#                       GOARCH is 386 -- every 386 row in arches.json carries
+#                       a specific value, same reasoning as GOARM/GOMIPS
+#                       above.
 
 ARG TAILSCALE_VERSION=1.92.2
 ARG OPENWRT_ARCH=mips_24kc
@@ -157,7 +162,7 @@ RUN curl -L "https://github.com/tailscale/tailscale/archive/refs/tags/v${TAILSCA
 # GOARCH/GOARM/GOMIPS/GOMIPS64/GO386 are explicit build-args (see the ARG
 # declarations above), sourced from arches.json's per-arch build tuple by
 # the caller (build-apk.sh/build.sh, or the CI workflow's matrix.arch.*
-# fields) -- see scripts/families.sh (RFC docs/rfc-apk-arch-coverage.md
+# fields) -- see scripts/arches.sh (RFC docs/rfc-apk-arch-coverage.md
 # §5.1/§5.2). There is deliberately NO name-based derivation from
 # OPENWRT_ARCH any more: this stage used to derive GOARCH by a string-`case`
 # on OPENWRT_ARCH with a `*) -> mips` default, which silently mis-built
@@ -168,10 +173,14 @@ RUN curl -L "https://github.com/tailscale/tailscale/archive/refs/tags/v${TAILSCA
 # or unrecognized GOARCH aborts loudly, and a MIPS/MIPS64 GOARCH with its
 # float ABI left unset also aborts loudly -- Go's silent default there is
 # hardfloat, which SIGILLs on softfloat MIPS/MIPS64 silicon (the same class
-# of live bug fixed for arm_cortex-a7, see §9).
+# of live bug fixed for arm_cortex-a7, see §9). ARM and 386 GOARCH get the
+# symmetric guard for their own float ABI (GOARM/GO386) -- every arm/386 row
+# in arches.json requires a specific value, so an empty one here is just as
+# much a silently-wrong-build risk as the MIPS/MIPS64 case, even though it
+# doesn't (currently) SIGILL.
 # GOARCH_VOCAB_CANONICAL (M6 code-review finding drift-guard anchor): this
 # exact vocabulary is ALSO hard-fail-guarded, independently, inside
-# scripts/families.sh's cmd_validate (it runs host-side, outside any
+# scripts/arches.sh's cmd_validate (it runs host-side, outside any
 # container, so it cannot exec into this build stage to share a runtime
 # function -- see that script's own matching GOARCH_VOCAB_CANONICAL marker
 # comment). tests/apk/dockerfile-goarch-drift.sh greps the first case-arm
@@ -195,6 +204,16 @@ RUN case "${GOARCH}" in \
       mips64|mips64le) \
         if [ -z "${GOMIPS64}" ]; then \
           echo "ERROR: GOARCH=${GOARCH} requires GOMIPS64 to be set explicitly (softfloat|hardfloat) -- Go silently defaults to hardfloat, which SIGILLs on softfloat MIPS64 silicon. Pass --build-arg GOMIPS64=, sourced from arches.json's gomips64 field." >&2; \
+          exit 1; \
+        fi ;; \
+      arm) \
+        if [ -z "${GOARM}" ]; then \
+          echo "ERROR: GOARCH=arm requires GOARM to be set explicitly (5|6|7) -- every arm row in arches.json carries a specific ARM float ABI (softfloat vs VFP hard-float), and this is exactly the arm_cortex-a7 GOARM=7/hard-float SIGILL class of bug (RFC docs/rfc-apk-arch-coverage.md §9). Pass --build-arg GOARM=, sourced from arches.json's goarm field." >&2; \
+          exit 1; \
+        fi ;; \
+      386) \
+        if [ -z "${GO386}" ]; then \
+          echo "ERROR: GOARCH=386 requires GO386 to be set explicitly (sse2|softfloat) -- every 386 row in arches.json carries a specific x86 float ABI, and an unset value risks the same silent-wrong-ABI class of bug as the MIPS/MIPS64/ARM guards above. Pass --build-arg GO386=, sourced from arches.json's go386 field." >&2; \
           exit 1; \
         fi ;; \
     esac && \
@@ -275,7 +294,7 @@ WORKDIR /ipk
 # CONTROL/ (below) stays format-specific and out of stage-payload.sh.
 COPY --from=scripts stage-payload.sh /tmp/stage-payload.sh
 RUN mkdir -p CONTROL && \
-    sh /tmp/stage-payload.sh /tmp/files /ipk /build/tailscaled
+    sh /tmp/stage-payload.sh --src-dir /tmp/files --dest-root /ipk --binary /build/tailscaled
 
 # Create control file
 RUN cat > CONTROL/control <<EOF

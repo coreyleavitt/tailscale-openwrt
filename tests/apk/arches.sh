@@ -1,10 +1,10 @@
 #!/bin/sh
-# tests/apk/families.sh
+# tests/apk/arches.sh
 #
 # Slices S1a+S1b test (RFC docs/rfc-apk-arch-coverage.md §5.2 + Slices):
 # the v2 `arches.json` fields (goarm/gomips/gomips64/go386/float/reason/tier),
 # the S1b widen to the full 35-row Appendix table (30 feasible + 5
-# infeasible, gated inert per §5.8), plus scripts/families.sh -- the pure,
+# infeasible, gated inert per §5.8), plus scripts/arches.sh -- the pure,
 # content-derived deriver that maps a build tuple to one of the 14 mnemonic
 # family ids (§4's table). No docker/qemu needed: this is a jq/shell unit
 # test in the tests/apk/lib.sh harness style (see host-apk.sh/rootfs.sh).
@@ -63,18 +63,18 @@
 #      payload that would otherwise splice raw case-arm syntax into the
 #      GENERATED install.sh block.
 #
-# Usage: sh tests/apk/families.sh
+# Usage: sh tests/apk/arches.sh
 
 set -eu
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 REPO_ROOT=$(CDPATH= cd -- "${SCRIPT_DIR}/../.." && pwd)
-FAMILIES_SH="${REPO_ROOT}/scripts/families.sh"
+ARCHES_SH="${REPO_ROOT}/scripts/arches.sh"
 ARCHES_JSON="${REPO_ROOT}/arches.json"
 
 # S1b widened the real arches.json to the full 35-row Appendix table; S7a
 # then pinned rootfs images + set `native_verify: true` (M8: renamed from
-# `verify` -- see scripts/families.sh's header comment) for the 10
+# `verify` -- see scripts/arches.sh's header comment) for the 10
 # CI-bootable families (§5.6) -- 4 families (A6HF/ASOFT/M32LEHF/RV64)
 # remain genuinely unbootable (no generic rootfs exists upstream) and stay
 # `native_verify: false` on every row, so `--with-ci` excludes them (the
@@ -92,9 +92,9 @@ FAMILIES_4ROW_FIXTURE="${SCRIPT_DIR}/fixtures/families-4row.json"
 
 require_cmd jq
 
-if [ ! -f "${FAMILIES_SH}" ]; then
-    log_fail "scripts/families.sh not found at ${FAMILIES_SH}"
-    harness_finish "tests/apk/families.sh"
+if [ ! -f "${ARCHES_SH}" ]; then
+    log_fail "scripts/arches.sh not found at ${ARCHES_SH}"
+    harness_finish "tests/apk/arches.sh"
     exit "${FAIL}"
 fi
 
@@ -151,22 +151,22 @@ echo
 
 # --- 2. --id-for: the 4 present tuples + hard-fail on an unmapped tuple ----
 
-echo "=== families.sh --id-for: 4 present tuples ==="
+echo "=== arches.sh --id-for: 4 present tuples ==="
 
 assert_eq "id-for aarch64_cortex-a53 tuple -> A64" "A64" \
-    "$("${FAMILIES_SH}" --id-for arm64 "" "" "" "")"
+    "$("${ARCHES_SH}" --id-for arm64 "" "" "" "")"
 assert_eq "id-for arm_cortex-a7 tuple -> ASOFT" "ASOFT" \
-    "$("${FAMILIES_SH}" --id-for arm 5 "" "" "")"
+    "$("${ARCHES_SH}" --id-for arm 5 "" "" "")"
 assert_eq "id-for mips_24kc tuple -> M32BE" "M32BE" \
-    "$("${FAMILIES_SH}" --id-for mips "" softfloat "" "")"
+    "$("${ARCHES_SH}" --id-for mips "" softfloat "" "")"
 assert_eq "id-for mipsel_24kc tuple -> M32LE" "M32LE" \
-    "$("${FAMILIES_SH}" --id-for mipsle "" softfloat "" "")"
+    "$("${ARCHES_SH}" --id-for mipsle "" softfloat "" "")"
 
 echo
-echo "=== families.sh --id-for: hard-fail on an unmapped tuple ==="
+echo "=== arches.sh --id-for: hard-fail on an unmapped tuple ==="
 
 set +e
-BOGUS_OUT=$("${FAMILIES_SH}" --id-for sparc64 "" "" "" "" 2>"${WORKDIR}/bogus.err")
+BOGUS_OUT=$("${ARCHES_SH}" --id-for sparc64 "" "" "" "" 2>"${WORKDIR}/bogus.err")
 BOGUS_RC=$?
 set -e
 BOGUS_ERR=$(cat "${WORKDIR}/bogus.err")
@@ -187,9 +187,9 @@ echo
 
 # --- 3. --validate: real arches.json passes; fixtured bad rows fail --------
 
-echo "=== families.sh --validate: real arches.json passes ==="
+echo "=== arches.sh --validate: real arches.json passes ==="
 
-if "${FAMILIES_SH}" --validate "${ARCHES_JSON}" >"${WORKDIR}/validate-good.out" 2>&1; then
+if "${ARCHES_SH}" --validate "${ARCHES_JSON}" >"${WORKDIR}/validate-good.out" 2>&1; then
     log_info "OK: --validate passes on the real arches.json"
 else
     log_fail "--validate failed on the real arches.json:
@@ -197,13 +197,13 @@ $(cat "${WORKDIR}/validate-good.out")"
 fi
 
 echo
-echo "=== families.sh --validate: fixtured typo'd enum fails ==="
+echo "=== arches.sh --validate: fixtured typo'd enum fails ==="
 
 jq '(.[] | select(.name == "mips_24kc") | .float) |= "sof"' "${ARCHES_JSON}" \
     > "${WORKDIR}/bad-enum.json"
 
 set +e
-"${FAMILIES_SH}" --validate "${WORKDIR}/bad-enum.json" >"${WORKDIR}/bad-enum.out" 2>&1
+"${ARCHES_SH}" --validate "${WORKDIR}/bad-enum.json" >"${WORKDIR}/bad-enum.out" 2>&1
 BAD_ENUM_RC=$?
 set -e
 
@@ -215,13 +215,13 @@ $(cat "${WORKDIR}/bad-enum.out")"
 fi
 
 echo
-echo "=== families.sh --validate: fixtured unmapped tuple fails ==="
+echo "=== arches.sh --validate: fixtured unmapped tuple fails ==="
 
 jq '(.[] | select(.name == "mips_24kc") | .goarm) |= "3"' "${ARCHES_JSON}" \
     > "${WORKDIR}/bad-tuple.json"
 
 set +e
-"${FAMILIES_SH}" --validate "${WORKDIR}/bad-tuple.json" >"${WORKDIR}/bad-tuple.out" 2>&1
+"${ARCHES_SH}" --validate "${WORKDIR}/bad-tuple.json" >"${WORKDIR}/bad-tuple.out" 2>&1
 BAD_TUPLE_RC=$?
 set -e
 
@@ -240,8 +240,8 @@ echo "=== id-stability: row-order shuffle does not change any family id ==="
 
 jq '[.[3], .[1], .[2], .[0]]' "${FAMILIES_4ROW_FIXTURE}" > "${WORKDIR}/shuffled.json"
 
-ORIG_FAMILIES=$("${FAMILIES_SH}" --with-ci "${FAMILIES_4ROW_FIXTURE}" | jq -S 'sort_by(.family)')
-SHUFFLED_FAMILIES=$("${FAMILIES_SH}" --with-ci "${WORKDIR}/shuffled.json" | jq -S 'sort_by(.family)')
+ORIG_FAMILIES=$("${ARCHES_SH}" --with-ci "${FAMILIES_4ROW_FIXTURE}" | jq -S 'sort_by(.family)')
+SHUFFLED_FAMILIES=$("${ARCHES_SH}" --with-ci "${WORKDIR}/shuffled.json" | jq -S 'sort_by(.family)')
 
 assert_eq "with-ci output is identical (as a set) regardless of row order" \
     "${ORIG_FAMILIES}" "${SHUFFLED_FAMILIES}"
@@ -269,14 +269,14 @@ jq '. + [{
         "native_verify": false
     }]' "${FAMILIES_4ROW_FIXTURE}" > "${WORKDIR}/added-arch.json"
 
-OTHER_FAMILIES_BEFORE=$("${FAMILIES_SH}" --with-ci "${FAMILIES_4ROW_FIXTURE}" | jq -S '[.[] | select(.family != "ASOFT")] | sort_by(.family)')
-OTHER_FAMILIES_AFTER=$("${FAMILIES_SH}" --with-ci "${WORKDIR}/added-arch.json" | jq -S '[.[] | select(.family != "ASOFT")] | sort_by(.family)')
+OTHER_FAMILIES_BEFORE=$("${ARCHES_SH}" --with-ci "${FAMILIES_4ROW_FIXTURE}" | jq -S '[.[] | select(.family != "ASOFT")] | sort_by(.family)')
+OTHER_FAMILIES_AFTER=$("${ARCHES_SH}" --with-ci "${WORKDIR}/added-arch.json" | jq -S '[.[] | select(.family != "ASOFT")] | sort_by(.family)')
 
 assert_eq "the other 3 families' with-ci rows are byte-identical after adding a 2nd ASOFT arch" \
     "${OTHER_FAMILIES_BEFORE}" "${OTHER_FAMILIES_AFTER}"
 
-ASOFT_ID_BEFORE=$("${FAMILIES_SH}" --id-for arm 5 "" "" "")
-ASOFT_ID_AFTER_A9=$("${FAMILIES_SH}" --id-for arm 5 "" "" "")
+ASOFT_ID_BEFORE=$("${ARCHES_SH}" --id-for arm 5 "" "" "")
+ASOFT_ID_AFTER_A9=$("${ARCHES_SH}" --id-for arm 5 "" "" "")
 assert_eq "ASOFT's own id-for mapping is unaffected by table growth (pure function)" \
     "${ASOFT_ID_BEFORE}" "${ASOFT_ID_AFTER_A9}"
 
@@ -284,9 +284,9 @@ echo
 
 # --- 5. --with-ci: exactly one verify per family, and it's bootable --------
 
-echo "=== families.sh --with-ci: one verify per family, each bootable ==="
+echo "=== arches.sh --with-ci: one verify per family, each bootable ==="
 
-WITH_CI=$("${FAMILIES_SH}" --with-ci "${FAMILIES_4ROW_FIXTURE}")
+WITH_CI=$("${ARCHES_SH}" --with-ci "${FAMILIES_4ROW_FIXTURE}")
 
 FAMILY_COUNT=$(echo "${WITH_CI}" | jq 'length')
 UNIQUE_FAMILY_COUNT=$(echo "${WITH_CI}" | jq '[.[].family] | unique | length')
@@ -361,7 +361,7 @@ jq '(.[] | select(.name == "mips_24kc") | .tier) |= "extended"
     "${ARCHES_JSON}" > "${WORKDIR}/bad-tier-reason-mismatch.json"
 
 set +e
-"${FAMILIES_SH}" --validate "${WORKDIR}/bad-tier-reason-mismatch.json" >"${WORKDIR}/bad-tier-reason-mismatch.out" 2>&1
+"${ARCHES_SH}" --validate "${WORKDIR}/bad-tier-reason-mismatch.json" >"${WORKDIR}/bad-tier-reason-mismatch.out" 2>&1
 BAD_TIER_REASON_RC=$?
 set -e
 
@@ -378,7 +378,7 @@ jq '(.[] | select(.tier == "infeasible") | select(.name == "powerpc_8548") | .re
     "${ARCHES_JSON}" > "${WORKDIR}/bad-infeasible-null-reason.json"
 
 set +e
-"${FAMILIES_SH}" --validate "${WORKDIR}/bad-infeasible-null-reason.json" >"${WORKDIR}/bad-infeasible-null-reason.out" 2>&1
+"${ARCHES_SH}" --validate "${WORKDIR}/bad-infeasible-null-reason.json" >"${WORKDIR}/bad-infeasible-null-reason.out" 2>&1
 BAD_INFEASIBLE_NULL_RC=$?
 set -e
 
@@ -394,7 +394,7 @@ assert_contains "R1: --validate names the offending row (infeasible tier, null r
 echo
 echo "=== widened table: --validate reports exactly 14 families ==="
 
-VALIDATE_OUT=$("${FAMILIES_SH}" --validate "${ARCHES_JSON}" 2>&1)
+VALIDATE_OUT=$("${ARCHES_SH}" --validate "${ARCHES_JSON}" 2>&1)
 VALIDATE_RC=$?
 assert_eq "--validate exits 0 on the widened 35-row table" "0" "${VALIDATE_RC}"
 assert_contains "--validate reports 14 families" "${VALIDATE_OUT}" "14 families"
@@ -415,7 +415,7 @@ echo "=== widened table: each of the 14 mnemonics is produced by some feasible r
 # not get collapsed.
 DERIVED_FAMILIES=$(jq -r '.[] | select(.tier != "infeasible") | [.goarch, .goarm, .gomips, .gomips64, .go386] | join("|")' "${ARCHES_JSON}" \
     | while IFS='|' read -r ga gm gmips gmips64 g386; do
-        "${FAMILIES_SH}" --id-for "${ga}" "${gm}" "${gmips}" "${gmips64}" "${g386}"
+        "${ARCHES_SH}" --id-for "${ga}" "${gm}" "${gmips}" "${gmips64}" "${g386}"
       done | sort -u)
 
 DERIVED_FAMILY_COUNT=$(echo "${DERIVED_FAMILIES}" | sed '/^$/d' | wc -l | tr -d ' ')
@@ -442,7 +442,7 @@ echo
 
 echo "=== S7a: --with-ci on the real arches.json: exactly 10 bootable families ==="
 
-REAL_WITH_CI=$("${FAMILIES_SH}" --with-ci "${ARCHES_JSON}")
+REAL_WITH_CI=$("${ARCHES_SH}" --with-ci "${ARCHES_JSON}")
 REAL_WITH_CI_COUNT=$(echo "${REAL_WITH_CI}" | jq 'length')
 assert_eq "--with-ci emits 10 rows for the real (S7a-pinned) arches.json" "10" "${REAL_WITH_CI_COUNT}"
 
@@ -494,7 +494,7 @@ jq '(.[] | select(.name == "arm_cortex-a9") | .native_verify) |= true | (.[] | s
     "${ARCHES_JSON}" > "${WORKDIR}/bad-verify-no-rootfs.json"
 
 set +e
-"${FAMILIES_SH}" --validate "${WORKDIR}/bad-verify-no-rootfs.json" >"${WORKDIR}/bad-verify-no-rootfs.out" 2>&1
+"${ARCHES_SH}" --validate "${WORKDIR}/bad-verify-no-rootfs.json" >"${WORKDIR}/bad-verify-no-rootfs.out" 2>&1
 BAD_VERIFY_NO_ROOTFS_RC=$?
 set -e
 
@@ -517,7 +517,7 @@ jq '(.[] | select(.name == "aarch64_cortex-a53") | .native_verify) |= true' \
     "${ARCHES_JSON}" > "${WORKDIR}/dup-verify.json"
 
 set +e
-"${FAMILIES_SH}" --validate "${WORKDIR}/dup-verify.json" >"${WORKDIR}/dup-verify.out" 2>&1
+"${ARCHES_SH}" --validate "${WORKDIR}/dup-verify.json" >"${WORKDIR}/dup-verify.out" 2>&1
 DUP_VERIFY_RC=$?
 set -e
 
@@ -532,7 +532,7 @@ echo
 echo "=== S7a: --with-ci itself hard-fails (not silently picks one) on two native_verify:true rows in a family ==="
 
 set +e
-"${FAMILIES_SH}" --with-ci "${WORKDIR}/dup-verify.json" >"${WORKDIR}/dup-verify-withci.out" 2>&1
+"${ARCHES_SH}" --with-ci "${WORKDIR}/dup-verify.json" >"${WORKDIR}/dup-verify-withci.out" 2>&1
 DUP_VERIFY_WITHCI_RC=$?
 set -e
 
@@ -550,7 +550,7 @@ echo
 
 echo "=== S7b: --unverified-arches on the real arches.json ==="
 
-UNVERIFIED_ARCHES=$("${FAMILIES_SH}" --unverified-arches "${ARCHES_JSON}" | sort)
+UNVERIFIED_ARCHES=$("${ARCHES_SH}" --unverified-arches "${ARCHES_JSON}" | sort)
 
 # Independently derive the expected set: every FEASIBLE row whose own
 # build-tuple family is one of the 4 known-unverified families (A6HF/ASOFT/
@@ -559,7 +559,7 @@ UNVERIFIED_ARCHES=$("${FAMILIES_SH}" --unverified-arches "${ARCHES_JSON}" | sort
 # output (that would be circular).
 EXPECTED_UNVERIFIED=$(jq -r '.[] | select(.tier != "infeasible") | [.name, .goarch, .goarm, .gomips, .gomips64, .go386] | join("|")' "${ARCHES_JSON}" \
     | while IFS='|' read -r nm ga gm gmips gmips64 g386; do
-        fam=$("${FAMILIES_SH}" --id-for "${ga}" "${gm}" "${gmips}" "${gmips64}" "${g386}")
+        fam=$("${ARCHES_SH}" --id-for "${ga}" "${gm}" "${gmips}" "${gmips64}" "${g386}")
         case "${fam}" in
             A6HF|ASOFT|M32LEHF|RV64) echo "${nm}" ;;
         esac
@@ -584,7 +584,7 @@ for verified_family in A64 A7HF M32BE M32LE M64BE M64LE X86SSE2 X86SOFT AMD64 LO
         [.name, .goarch, .goarm, .gomips, .gomips64, .go386] | join("|")
     ' "${ARCHES_JSON}" \
         | while IFS='|' read -r nm ga gm gmips gmips64 g386; do
-            fam=$("${FAMILIES_SH}" --id-for "${ga}" "${gm}" "${gmips}" "${gmips64}" "${g386}")
+            fam=$("${ARCHES_SH}" --id-for "${ga}" "${gm}" "${gmips}" "${gmips64}" "${g386}")
             if [ "${fam}" = "${verified_family}" ]; then
                 echo "${nm}"
             fi
@@ -663,7 +663,7 @@ for bad_name in ${INJECTION_NAMES}; do
     jq --arg n "${bad_name}" '(.[0].name) = $n' "${ARCHES_JSON}" > "${WORKDIR}/bad-name.json"
 
     set +e
-    "${FAMILIES_SH}" --validate "${WORKDIR}/bad-name.json" >"${WORKDIR}/bad-name.out" 2>&1
+    "${ARCHES_SH}" --validate "${WORKDIR}/bad-name.json" >"${WORKDIR}/bad-name.out" 2>&1
     BAD_NAME_RC=$?
     set -e
 
@@ -719,7 +719,7 @@ assert_eq "precondition: the fixture's reason really does contain a newline" \
     "true" "$(jq -r '.[] | select(.name == "powerpc_8548") | (.reason | test("\n"))' "${WORKDIR}/bad-reason-newline.json")"
 
 set +e
-"${FAMILIES_SH}" --validate "${WORKDIR}/bad-reason-newline.json" >"${WORKDIR}/bad-reason-newline.out" 2>&1
+"${ARCHES_SH}" --validate "${WORKDIR}/bad-reason-newline.json" >"${WORKDIR}/bad-reason-newline.out" 2>&1
 BAD_REASON_NEWLINE_RC=$?
 set -e
 
@@ -740,14 +740,14 @@ echo
 # in FOUR places (tailscale-package/build-apk.sh, scripts/publish-feed.sh's
 # committed-core depublish guard, .github/workflows/build-tailscale.yaml's
 # two republish-feed loops). All four now route through
-# `families.sh --tier-arches`. This section asserts the accessor itself is
+# `arches.sh --tier-arches`. This section asserts the accessor itself is
 # correct, AND (a grep-based drift assertion, mirroring
 # tests/apk/install-arch-block.sh's byte-identity discipline) that none of
 # those four authored jq calls has silently come back.
 
 echo "=== M4: --tier-arches core on the real arches.json ==="
 
-TIER_CORE_ARCHES=$("${FAMILIES_SH}" --tier-arches core "${ARCHES_JSON}")
+TIER_CORE_ARCHES=$("${ARCHES_SH}" --tier-arches core "${ARCHES_JSON}")
 EXPECTED_CORE='aarch64_cortex-a53
 arm_cortex-a7
 mips_24kc
@@ -755,17 +755,17 @@ mipsel_24kc'
 assert_eq "--tier-arches core emits exactly the 4 historical core arches, sorted" \
     "${EXPECTED_CORE}" "${TIER_CORE_ARCHES}"
 
-TIER_EXTENDED_COUNT=$("${FAMILIES_SH}" --tier-arches extended "${ARCHES_JSON}" | sed '/^$/d' | wc -l | tr -d ' ')
+TIER_EXTENDED_COUNT=$("${ARCHES_SH}" --tier-arches extended "${ARCHES_JSON}" | sed '/^$/d' | wc -l | tr -d ' ')
 assert_eq "--tier-arches extended emits 26 arches" "26" "${TIER_EXTENDED_COUNT}"
 
-TIER_INFEASIBLE_COUNT=$("${FAMILIES_SH}" --tier-arches infeasible "${ARCHES_JSON}" | sed '/^$/d' | wc -l | tr -d ' ')
+TIER_INFEASIBLE_COUNT=$("${ARCHES_SH}" --tier-arches infeasible "${ARCHES_JSON}" | sed '/^$/d' | wc -l | tr -d ' ')
 assert_eq "--tier-arches infeasible emits 5 arches" "5" "${TIER_INFEASIBLE_COUNT}"
 
 echo
 echo "=== M4: --tier-arches hard-fails on an unknown tier ==="
 
 set +e
-"${FAMILIES_SH}" --tier-arches bogus "${ARCHES_JSON}" >"${WORKDIR}/bad-tier.out" 2>&1
+"${ARCHES_SH}" --tier-arches bogus "${ARCHES_JSON}" >"${WORKDIR}/bad-tier.out" 2>&1
 BAD_TIER_RC=$?
 set -e
 
@@ -794,7 +794,7 @@ echo "=== M4: select-matrix.sh --ipk-arches (non-PR) computes the SAME name set 
 SELECT_MATRIX="${REPO_ROOT}/scripts/select-matrix.sh"
 if [ -x "${SELECT_MATRIX}" ]; then
     SELECT_MATRIX_CORE=$("${SELECT_MATRIX}" workflow_dispatch --ipk-arches "${ARCHES_JSON}" | jq -r '[.[].name] | sort | .[]')
-    assert_eq "select-matrix.sh --ipk-arches (workflow_dispatch) name set == families.sh --tier-arches core" \
+    assert_eq "select-matrix.sh --ipk-arches (workflow_dispatch) name set == arches.sh --tier-arches core" \
         "${TIER_CORE_ARCHES}" "${SELECT_MATRIX_CORE}"
 else
     log_fail "scripts/select-matrix.sh not found or not executable at ${SELECT_MATRIX}"
@@ -806,7 +806,7 @@ echo
 #
 # select-matrix.sh --compile-families used to re-derive the family grouping
 # independently (a per-row --id-for subprocess loop + its own group_by).
-# It now delegates wholesale to families.sh --compile-families, built on
+# It now delegates wholesale to arches.sh --compile-families, built on
 # the SAME build_family_rows() grouping --with-ci/--unverified-arches
 # already share. This section exercises the new mode directly (not just
 # through select-matrix.sh) and cross-checks the two agree.
@@ -816,7 +816,7 @@ echo "=== M5: --compile-families on the full feasible (gate-flip) set ==="
 FEASIBLE_GATED="${WORKDIR}/feasible-gated.json"
 jq -c '[.[] | select(.reason == null)]' "${ARCHES_JSON}" > "${FEASIBLE_GATED}"
 
-COMPILE_FAMILIES_OUT=$("${FAMILIES_SH}" --compile-families "${FEASIBLE_GATED}")
+COMPILE_FAMILIES_OUT=$("${ARCHES_SH}" --compile-families "${FEASIBLE_GATED}")
 assert_eq "--compile-families emits 14 family rows for the full feasible set" \
     "14" "$(echo "${COMPILE_FAMILIES_OUT}" | jq 'length')"
 assert_eq "--compile-families' arch lists sum to 30 (every feasible arch, no fewer)" \
@@ -827,7 +827,7 @@ assert_eq "--compile-families' arch lists sum to 30 (every feasible arch, no few
 # structural self-consistency check independent of select-matrix.sh.
 BAD_TUPLE_FAMILIES=$(echo "${COMPILE_FAMILIES_OUT}" | jq -r '.[] | [.family, .goarch, .goarm, .gomips, .gomips64, .go386] | join("|")' \
     | while IFS='|' read -r fam ga gm gmips gmips64 g386; do
-        derived=$("${FAMILIES_SH}" --id-for "${ga}" "${gm}" "${gmips}" "${gmips64}" "${g386}")
+        derived=$("${ARCHES_SH}" --id-for "${ga}" "${gm}" "${gmips}" "${gmips64}" "${g386}")
         if [ "${derived}" != "${fam}" ]; then
             echo "${fam} derived-as ${derived}"
         fi
@@ -839,17 +839,17 @@ echo "=== M5: --compile-families is order-independent (row-shuffled input yields
 
 SHUFFLED_GATED="${WORKDIR}/feasible-gated-shuffled.json"
 jq '[.[3], .[1], .[0], .[2]] + .[4:]' "${FEASIBLE_GATED}" > "${SHUFFLED_GATED}"
-SHUFFLED_COMPILE=$("${FAMILIES_SH}" --compile-families "${SHUFFLED_GATED}" | jq -S .)
+SHUFFLED_COMPILE=$("${ARCHES_SH}" --compile-families "${SHUFFLED_GATED}" | jq -S .)
 ORIGINAL_COMPILE=$(echo "${COMPILE_FAMILIES_OUT}" | jq -S .)
 assert_eq "shuffling the gated input's row order does not change --compile-families' view" \
     "${ORIGINAL_COMPILE}" "${SHUFFLED_COMPILE}"
 
 echo
-echo "=== M5: select-matrix.sh --compile-families agrees with families.sh --compile-families on the same gated input ==="
+echo "=== M5: select-matrix.sh --compile-families agrees with arches.sh --compile-families on the same gated input ==="
 
 if [ -x "${SELECT_MATRIX}" ]; then
     SELECT_MATRIX_COMPILE=$("${SELECT_MATRIX}" workflow_dispatch --compile-families "${ARCHES_JSON}" | jq -S .)
-    assert_eq "select-matrix.sh --compile-families (workflow_dispatch) == families.sh --compile-families on the same reason==null gate" \
+    assert_eq "select-matrix.sh --compile-families (workflow_dispatch) == arches.sh --compile-families on the same reason==null gate" \
         "${ORIGINAL_COMPILE}" "${SELECT_MATRIX_COMPILE}"
 else
     log_fail "scripts/select-matrix.sh not found or not executable at ${SELECT_MATRIX}"
@@ -858,14 +858,14 @@ fi
 echo
 echo "=== M5: no authored per-row --id-for grouping loop remains in select-matrix.sh ==="
 
-# select-matrix.sh legitimately still calls families.sh for other things
+# select-matrix.sh legitimately still calls arches.sh for other things
 # (--with-ci for --verify-families, --tier-arches for --ipk-arches); what
 # must be gone is the --compile-families code path's own per-row --id-for
 # subprocess loop. Anchor on the retired loop's own distinctive error
 # message string (unique to that deleted code, never reused elsewhere) --
 # NOT a bare grep for '--id-for' by name.
 M5_LEAKED=$(grep -n "select-matrix.sh --compile-families: arch '" "${SELECT_MATRIX}" || true)
-assert_eq "select-matrix.sh no longer contains its own --compile-families unmapped-tuple error path (now families.sh's job)" \
+assert_eq "select-matrix.sh no longer contains its own --compile-families unmapped-tuple error path (now arches.sh's job)" \
     "" "${M5_LEAKED}"
 
 echo
@@ -881,7 +881,7 @@ echo "=== M8: the arches.json schema uses 'native_verify', never the old bare 'v
 # Every row carries native_verify as a real (present, not `// default`)
 # key, and the old key name is gone entirely -- a reader can no longer
 # mistake the row-level boolean for --with-ci's own OUTPUT key `verify`
-# (they used to share one name; see scripts/families.sh's header comment).
+# (they used to share one name; see scripts/arches.sh's header comment).
 MISSING_NATIVE_VERIFY_KEY=$(jq '[.[] | select(has("native_verify") | not)] | length' "${ARCHES_JSON}")
 assert_eq "every row has a 'native_verify' key" "0" "${MISSING_NATIVE_VERIFY_KEY}"
 
@@ -927,7 +927,7 @@ done
 # reader sees the legality asserted right next to the fact it's legalizing
 # (not just inferred transitively from an earlier, differently-labeled
 # section).
-if "${FAMILIES_SH}" --validate "${ARCHES_JSON}" >"${WORKDIR}/m8-legal.out" 2>&1; then
+if "${ARCHES_SH}" --validate "${ARCHES_JSON}" >"${WORKDIR}/m8-legal.out" 2>&1; then
     log_info "OK: --validate accepts the real table's pinned-but-native_verify:false core-ARM rows (legal, not a schema violation)"
 else
     log_fail "--validate rejected the real arches.json, which legitimately carries rootfs pins on native_verify:false rows:
@@ -936,4 +936,4 @@ fi
 
 echo
 
-harness_finish "tests/apk/families.sh"
+harness_finish "tests/apk/arches.sh"

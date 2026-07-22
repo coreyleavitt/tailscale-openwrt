@@ -4,10 +4,10 @@
 # M6 (code-review finding, docs/rfc-apk-arch-coverage.md §5.2 "no authored
 # duplicate + a drift-guard test"): the exact GOARCH allow-list literal
 # `arm64|arm|mips|mipsle|mips64|mips64le|386|amd64|riscv64|loong64` is
-# authored TWICE, unavoidably -- once in scripts/families.sh's
+# authored TWICE, unavoidably -- once in scripts/arches.sh's
 # cmd_validate (the host-side schema guard) and once in
 # tailscale-package/Dockerfile's build-stage hard-fail guard (which runs
-# INSIDE the docker build, with no access to families.sh -- there is no
+# INSIDE the docker build, with no access to arches.sh -- there is no
 # runtime function to share across that boundary). A GOARCH added to one
 # and forgotten in the other is a live bug: either a new arch silently
 # fails Dockerfile's hard-fail guard while --validate accepts it (or vice
@@ -23,7 +23,7 @@
 # vocabulary itself evolves (e.g. a hypothetical future Go GOARCH addition
 # lands in both places together, in the same commit).
 #
-# No docker build needed -- pure grep/sh, mirroring families.sh/
+# No docker build needed -- pure grep/sh, mirroring arches.sh/
 # select-matrix.sh's own hermetic test style.
 #
 # Usage: sh tests/apk/dockerfile-goarch-drift.sh
@@ -32,14 +32,14 @@ set -eu
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 REPO_ROOT=$(CDPATH= cd -- "${SCRIPT_DIR}/../.." && pwd)
-FAMILIES_SH="${REPO_ROOT}/scripts/families.sh"
+ARCHES_SH="${REPO_ROOT}/scripts/arches.sh"
 DOCKERFILE="${REPO_ROOT}/tailscale-package/Dockerfile"
 
 # shellcheck source=tests/apk/lib.sh
 . "${SCRIPT_DIR}/lib.sh"
 
-if [ ! -f "${FAMILIES_SH}" ]; then
-    log_fail "scripts/families.sh not found at ${FAMILIES_SH}"
+if [ ! -f "${ARCHES_SH}" ]; then
+    log_fail "scripts/arches.sh not found at ${ARCHES_SH}"
     harness_finish "tests/apk/dockerfile-goarch-drift.sh"
     exit "${FAIL}"
 fi
@@ -52,7 +52,7 @@ fi
 # extract_goarch_vocab <file> -- find the GOARCH_VOCAB_CANONICAL marker
 # comment, then scan forward for the first line shaped like a POSIX `case`
 # arm listing 2+ pipe-separated bare words ending in `) ;;` (works whether
-# that line is immediately after the marker, as in families.sh, or a few
+# that line is immediately after the marker, as in arches.sh, or a few
 # lines later, as in the Dockerfile where the marker sits above the `RUN
 # case "${GOARCH}" in \` line itself -- a shell comment cannot be spliced
 # into the middle of a backslash-continued Dockerfile RUN instruction).
@@ -77,13 +77,13 @@ extract_goarch_vocab() {
 
 echo "=== M6: extract GOARCH vocab from both authored sites ==="
 
-FAMILIES_VOCAB=$(extract_goarch_vocab "${FAMILIES_SH}")
+FAMILIES_VOCAB=$(extract_goarch_vocab "${ARCHES_SH}")
 DOCKERFILE_VOCAB=$(extract_goarch_vocab "${DOCKERFILE}")
 
 if [ -z "${FAMILIES_VOCAB}" ]; then
-    log_fail "could not extract a GOARCH vocabulary from ${FAMILIES_SH} (GOARCH_VOCAB_CANONICAL marker missing or moved?)"
+    log_fail "could not extract a GOARCH vocabulary from ${ARCHES_SH} (GOARCH_VOCAB_CANONICAL marker missing or moved?)"
 else
-    log_info "OK: extracted families.sh vocab: $(echo "${FAMILIES_VOCAB}" | tr '\n' ' ')"
+    log_info "OK: extracted arches.sh vocab: $(echo "${FAMILIES_VOCAB}" | tr '\n' ' ')"
 fi
 
 if [ -z "${DOCKERFILE_VOCAB}" ]; then
@@ -96,7 +96,7 @@ echo
 
 echo "=== M6: the two authored GOARCH vocabularies are set-identical ==="
 
-assert_eq "families.sh cmd_validate's GOARCH vocab == Dockerfile's build-stage GOARCH vocab" \
+assert_eq "arches.sh cmd_validate's GOARCH vocab == Dockerfile's build-stage GOARCH vocab" \
     "${FAMILIES_VOCAB}" "${DOCKERFILE_VOCAB}"
 
 echo
