@@ -76,6 +76,21 @@
 #      explicit `--allow-depublish <arch>` (repeatable), for a deliberate
 #      arch retirement (RFC §5.7 decommission runbook, S9).
 #
+# S7b (RFC §5.6/§Slices S7b) adds one more thing, purely informational:
+#
+#   7. UNVERIFIED-TIER PUBLISH LOG. Once the published-arch set for this run
+#      is known (final accounting, after the core/extended split above),
+#      `assemble` intersects it against `families.sh --unverified-arches`
+#      (D1, reusing the SAME committed ARCHES_JSON_PATH the depublish guard
+#      already reads -- the authoritative family/verify data, not just this
+#      run's passed-in rows) and log()s exactly which published arches have
+#      no CI-boot verify:true representative in their family -- they ship on
+#      architectural certainty alone (S7a never qemu-verified them; S7b's own
+#      named acceptance criterion: "coverage is never silently overstated").
+#      Purely a log() -- NEVER changes assemble's exit status, and a run that
+#      published only boot-verified arches gets a clean "all verified" line
+#      instead of an empty/spurious warning.
+#
 # Usage:
 #   publish-feed.sh assemble <arches-json> <built-apks-dir> <pages-root> \
 #       [--force] [--allow-depublish <arch>]...
@@ -120,8 +135,12 @@
 #   TS_VERIFY_SETTLE_DELAY    seconds between settle retries (default 3;
 #                             tests set 0)
 #   ARCHES_JSON_PATH          committed arch table the depublish guard reads
-#                             tier=="core" names from (default:
-#                             <repo-root>/arches.json)
+#                             tier=="core" names from, and (S7b) the table
+#                             the unverified-tier publish log is computed
+#                             against (default: <repo-root>/arches.json)
+#   FAMILIES_SH               path to families.sh, used by the S7b
+#                             unverified-tier publish log (default:
+#                             <repo-root>/scripts/families.sh)
 #   (publish-arch.sh's own APK_BIN/SIGN_URL/LIVE_BASE_URL/etc env overrides
 #   pass through unchanged -- this script never shadows them.)
 set -eu
@@ -146,6 +165,11 @@ NOTIFY_ALERT="${NOTIFY_ALERT:-${REPO_ROOT}/scripts/notify-alert.sh}"
 # runs this script from a checkout that has it at the repo root). Tests
 # point this at a small fixture instead.
 ARCHES_JSON_PATH="${ARCHES_JSON_PATH:-${REPO_ROOT}/arches.json}"
+# S7b (RFC §5.6/§Slices S7b): the unverified-tier publish log reuses
+# families.sh's own `--unverified-arches` query (D1) rather than
+# re-implementing family grouping here -- see cmd_assemble's final
+# accounting.
+FAMILIES_SH="${FAMILIES_SH:-${REPO_ROOT}/scripts/families.sh}"
 
 [ -f "${PUBLISH_ARCH_SH}" ] || die "publish-arch.sh not found: ${PUBLISH_ARCH_SH}"
 
@@ -375,6 +399,54 @@ cmd_assemble() {
         echo "publish-feed.sh assemble: published with ${_dropped_extended}dropped (extended, best-effort) -- every core arch + every other extended arch succeeded"
     else
         echo "publish-feed.sh assemble: all $(echo "${_arch_names}" | grep -c .) arch(es) published successfully"
+    fi
+
+    # S7b (RFC §5.6/§Slices S7b): log() which of THIS RUN's actually-
+    # published arches (arch_names minus whatever extended arches were just
+    # dropped above -- a dropped arch's directory was rm -rf'd, so it was
+    # never really published) are in the "unverified" tier: no CI-boot
+    # verify:true representative anywhere in their family (D1's
+    # families.sh --unverified-arches, against the SAME committed
+    # ARCHES_JSON_PATH the depublish guard already consulted -- the
+    # authoritative family/verify data, not just this run's passed-in rows).
+    # Purely informational -- NEVER touches assemble's exit status. A
+    # families.sh failure (e.g. a committed table that predates the S7b
+    # schema) degrades to "nothing to report" rather than failing the
+    # publish over an informational feature.
+    _published_names=""
+    for _arch in ${_arch_names}; do
+        case " ${_dropped_extended}" in
+            *" ${_arch} "*) ;;  # dropped this run -- never actually published
+            *) _published_names="${_published_names}${_arch} " ;;
+        esac
+    done
+
+    _unverified_tier=""
+    if _u=$(sh "${FAMILIES_SH}" --unverified-arches "${ARCHES_JSON_PATH}" 2>/dev/null); then
+        _unverified_tier="${_u}"
+    fi
+    _unverified_space=" "
+    for _u in ${_unverified_tier}; do
+        _unverified_space="${_unverified_space}${_u} "
+    done
+
+    _published_count=0
+    _published_unverified=""
+    _published_unverified_count=0
+    for _arch in ${_published_names}; do
+        _published_count=$((_published_count + 1))
+        case "${_unverified_space}" in
+            *" ${_arch} "*)
+                _published_unverified="${_published_unverified}${_arch} "
+                _published_unverified_count=$((_published_unverified_count + 1))
+                ;;
+        esac
+    done
+
+    if [ "${_published_unverified_count}" -gt 0 ]; then
+        echo "publish-feed.sh assemble: ${_published_unverified_count} published arch(es) are in the S7b unverified tier (RFC §5.6/S7b) -- shipped on architectural certainty only, NOT CI-boot-verified: ${_published_unverified}"
+    else
+        echo "publish-feed.sh assemble: all ${_published_count} published arch(es) are CI-boot-verified (RFC §5.6/S7b) -- none shipped on architectural-certainty-only this run"
     fi
 }
 

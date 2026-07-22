@@ -48,6 +48,25 @@
 #       single family has MORE than one `verify: true` row, or if a
 #       `verify: true` row does not itself carry a real rootfs pin.
 #
+#   families.sh --unverified-arches [arches.json]
+#       S7b (RFC §5.6/§Slices S7b): the complement of --with-ci at arch
+#       granularity. Emits, one per line, every FEASIBLE (`reason == null`)
+#       arch NAME whose computed family has NO `verify: true` row anywhere
+#       in the table -- i.e. every arch belonging to one of the S7b
+#       "unverified" families (today: A6HF, ASOFT, M32LEHF, RV64). These
+#       ship on architectural certainty alone: no bootable rootfs exists
+#       whose native `/etc/apk/arch` confirms the family, so CI can never
+#       qemu-verify them (unlike the 10 families --with-ci covers).
+#       Excludes: every arch in a family --with-ci WOULD emit (boot-verified
+#       families), and every infeasible arch (`reason != null` -- a
+#       different tier entirely, never published at all). Reuses the exact
+#       same per-arch row-building + family grouping `--with-ci` uses (see
+#       `build_family_rows` below) -- this is a DERIVED view over the same
+#       grouping, not a second, potentially-divergent way to compute
+#       families. Publish-time consumer: scripts/publish-feed.sh's
+#       `cmd_assemble` logs the intersection of this set with the run's
+#       actually-published arches (S7b's named log() acceptance criterion).
+#
 #   families.sh --validate [arches.json]
 #       The schema guard (round-2 P-SEV3): every row's build tuple must
 #       map to a known family id (via --id-for; hard-fails on unmapped,
@@ -65,6 +84,7 @@
 # Usage:
 #   scripts/families.sh --id-for <goarch> <goarm> <gomips> <gomips64> <go386>
 #   scripts/families.sh --with-ci [arches.json]
+#   scripts/families.sh --unverified-arches [arches.json]
 #   scripts/families.sh --validate [arches.json]
 
 set -eu
@@ -77,6 +97,7 @@ usage() {
 Usage:
   families.sh --id-for <goarch> <goarm> <gomips> <gomips64> <go386>
   families.sh --with-ci [arches.json]
+  families.sh --unverified-arches [arches.json]
   families.sh --validate [arches.json]
 EOF
 }
@@ -120,17 +141,24 @@ cmd_id_for() {
     id_for "$1" "$2" "$3" "$4" "$5"
 }
 
-cmd_with_ci() {
-    _arches_json="${1:-${REPO_ROOT}/arches.json}"
-    if [ ! -f "${_arches_json}" ]; then
-        echo "families.sh: ${_arches_json} not found" >&2
-        exit 1
-    fi
+# build_family_rows <arches.json> <out-file>
+#
+# Shared by --with-ci and --unverified-arches (S7b) so both derive families
+# via the exact same per-arch grouping -- never a second, potentially-
+# divergent way to compute them (deep-module discipline: one place knows how
+# a row becomes a family-tagged JSONL record). Appends one JSONL row per
+# FEASIBLE (`reason == null`) arch to <out-file>: family id, name, bootable
+# (real rootfs pin present), verify_flag (this row's own `verify` boolean),
+# rootfs fields, container_arch, and the build tuple. Infeasible rows
+# (reason != null) are skipped entirely -- they have no family (the
+# Appendix's own `family` column is blank for them). Hard-fails (schema
+# violation, not a normal case) if any feasible row's build tuple is
+# unmapped -- naming the offending arch and the calling command.
+build_family_rows() {
+    _arches_json="$1"; _out_file="$2"
 
     _count=$(jq 'length' "${_arches_json}")
     _i=0
-    _rows_file=$(mktemp)
-    trap 'rm -f "${_rows_file}"' EXIT
 
     while [ "${_i}" -lt "${_count}" ]; do
         _row=$(jq -c ".[${_i}]" "${_arches_json}")
@@ -153,7 +181,7 @@ cmd_with_ci() {
         _go386=$(echo "${_row}" | jq -r '.go386 // ""')
 
         _family=$(id_for "${_goarch}" "${_goarm}" "${_gomips}" "${_gomips64}" "${_go386}") || {
-            echo "families.sh --with-ci: arch '${_name}' has an unmapped build tuple" >&2
+            echo "families.sh: arch '${_name}' has an unmapped build tuple" >&2
             exit 1
         }
 
@@ -187,8 +215,20 @@ cmd_with_ci() {
               rootfs_target: $rootfs_target, rootfs_url: $rootfs_url, rootfs_sha256: $rootfs_sha256,
               container_arch: $container_arch,
               goarch: $goarch, goarm: $goarm, gomips: $gomips, gomips64: $gomips64, go386: $go386}' \
-            >> "${_rows_file}"
+            >> "${_out_file}"
     done
+}
+
+cmd_with_ci() {
+    _arches_json="${1:-${REPO_ROOT}/arches.json}"
+    if [ ! -f "${_arches_json}" ]; then
+        echo "families.sh: ${_arches_json} not found" >&2
+        exit 1
+    fi
+
+    _rows_file=$(mktemp)
+    trap 'rm -f "${_rows_file}"' EXIT
+    build_family_rows "${_arches_json}" "${_rows_file}"
 
     # Group the per-arch rows by family. The verify representative is the
     # row an author explicitly marked `verify: true` (round-2 D-SEV2
@@ -220,6 +260,34 @@ cmd_with_ci() {
               end
           )
         | sort_by(.family)
+    ' "${_rows_file}"
+}
+
+cmd_unverified_arches() {
+    _arches_json="${1:-${REPO_ROOT}/arches.json}"
+    if [ ! -f "${_arches_json}" ]; then
+        echo "families.sh: ${_arches_json} not found" >&2
+        exit 1
+    fi
+
+    _rows_file=$(mktemp)
+    trap 'rm -f "${_rows_file}"' EXIT
+    build_family_rows "${_arches_json}" "${_rows_file}"
+
+    # S7b: the complement of --with-ci's own family grouping, at arch
+    # granularity -- group the SAME per-arch rows by family, keep only the
+    # families with ZERO verify:true rows (the unverified tier), then flatten
+    # to just their arch names, one per line, sorted for a stable diff.
+    # Deliberately does NOT duplicate --with-ci's ">1 verify:true" hard-fail
+    # (that schema violation is families.sh --validate's job); this view only
+    # cares whether a family has any verified representative at all.
+    jq -s -r '
+        group_by(.family)
+        | map(select(([.[] | select(.verify_flag)] | length) == 0))
+        | map(.[].name)
+        | flatten
+        | sort
+        | .[]
     ' "${_rows_file}"
 }
 
@@ -401,6 +469,10 @@ case "${MODE}" in
     --with-ci)
         shift
         cmd_with_ci "${1:-}"
+        ;;
+    --unverified-arches)
+        shift
+        cmd_unverified_arches "${1:-}"
         ;;
     --validate)
         shift

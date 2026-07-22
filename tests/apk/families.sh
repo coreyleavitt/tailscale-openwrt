@@ -470,4 +470,87 @@ else
 $(cat "${WORKDIR}/dup-verify-withci.out")"
 fi
 
+echo
+
+# --- 8. S7b: --unverified-arches -- the feasible arches of the 4 unverified
+# families, reusing --with-ci's own family grouping ------------------------
+
+echo "=== S7b: --unverified-arches on the real arches.json ==="
+
+UNVERIFIED_ARCHES=$("${FAMILIES_SH}" --unverified-arches "${ARCHES_JSON}" | sort)
+
+# Independently derive the expected set: every FEASIBLE row whose own
+# build-tuple family is one of the 4 known-unverified families (A6HF/ASOFT/
+# M32LEHF/RV64, S7a/§5.6) -- via --id-for per row, the same technique
+# section 6 above already uses, NOT by re-reading --unverified-arches' own
+# output (that would be circular).
+EXPECTED_UNVERIFIED=$(jq -r '.[] | select(.tier != "infeasible") | [.name, .goarch, .goarm, .gomips, .gomips64, .go386] | join("|")' "${ARCHES_JSON}" \
+    | while IFS='|' read -r nm ga gm gmips gmips64 g386; do
+        fam=$("${FAMILIES_SH}" --id-for "${ga}" "${gm}" "${gmips}" "${gmips64}" "${g386}")
+        case "${fam}" in
+            A6HF|ASOFT|M32LEHF|RV64) echo "${nm}" ;;
+        esac
+      done | sort)
+
+assert_eq "--unverified-arches emits exactly the feasible arches of the 4 unverified families" \
+    "${EXPECTED_UNVERIFIED}" "${UNVERIFIED_ARCHES}"
+
+UNVERIFIED_COUNT=$(echo "${UNVERIFIED_ARCHES}" | sed '/^$/d' | wc -l | tr -d ' ')
+if [ "${UNVERIFIED_COUNT}" -gt 0 ]; then
+    log_info "OK: --unverified-arches emits a non-empty set (${UNVERIFIED_COUNT} arches) -- not a vacuous pass"
+else
+    log_fail "--unverified-arches emitted an empty set against the real (4-unverified-family) arches.json"
+fi
+
+echo
+echo "=== S7b: --unverified-arches excludes every boot-verified family's arches ==="
+
+for verified_family in A64 A7HF M32BE M32LE M64BE M64LE X86SSE2 X86SOFT AMD64 LOONG64; do
+    VERIFIED_FAMILY_ARCHES=$(jq -r '
+        .[] | select(.tier != "infeasible") |
+        [.name, .goarch, .goarm, .gomips, .gomips64, .go386] | join("|")
+    ' "${ARCHES_JSON}" \
+        | while IFS='|' read -r nm ga gm gmips gmips64 g386; do
+            fam=$("${FAMILIES_SH}" --id-for "${ga}" "${gm}" "${gmips}" "${gmips64}" "${g386}")
+            if [ "${fam}" = "${verified_family}" ]; then
+                echo "${nm}"
+            fi
+          done)
+    for a in ${VERIFIED_FAMILY_ARCHES}; do
+        case "
+${UNVERIFIED_ARCHES}
+" in
+            *"
+${a}
+"*)
+                log_fail "--unverified-arches wrongly includes ${a} (family ${verified_family} is boot-verified)"
+                ;;
+            *)
+                log_info "OK: ${a} (family ${verified_family}, boot-verified) correctly excluded"
+                ;;
+        esac
+    done
+done
+
+echo
+echo "=== S7b: --unverified-arches excludes every infeasible arch ==="
+
+INFEASIBLE_NAMES=$(jq -r '.[] | select(.tier == "infeasible") | .name' "${ARCHES_JSON}")
+for a in ${INFEASIBLE_NAMES}; do
+    case "
+${UNVERIFIED_ARCHES}
+" in
+        *"
+${a}
+"*)
+            log_fail "--unverified-arches wrongly includes infeasible arch ${a}"
+            ;;
+        *)
+            log_info "OK: infeasible arch ${a} correctly excluded (different tier entirely)"
+            ;;
+    esac
+done
+
+echo
+
 harness_finish "tests/apk/families.sh"

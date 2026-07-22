@@ -673,4 +673,83 @@ assert_eq "9b: dep-a still published normally" "true" \
 
 echo
 
+# ===========================================================================
+# 10. S7b: publish-time log() of the unverified tier (RFC §5.6/§Slices S7b)
+# ===========================================================================
+echo "=== 10. S7b: assemble logs which PUBLISHED arches are in the unverified tier ==="
+
+# A richer committed-table fixture (real arches.json shape -- goarch/verify/
+# reason, not just name+tier) so scripts/families.sh --unverified-arches can
+# actually compute family grouping against it, per the RFC's "consult the
+# committed table via ARCHES_JSON_PATH ... reuse D1's query" requirement.
+# core-v1 is a boot-verified family (A64-shaped tuple, verify:true); the two
+# ext-unverified-* arches belong to two DIFFERENT unverified families
+# (riscv64 -> RV64-shaped, arm/goarm=6 -> A6HF-shaped) -- neither has any
+# verify:true row anywhere in this table.
+ARCHES_JSON_PATH_10="${WORKDIR}/arches-committed-10.json"
+jq -n '[
+    {name:"core-v1", goarch:"arm64", goarm:"", gomips:"", gomips64:"", go386:"",
+     endian:"little", float:"hard", reason:null, tier:"core", canary:false,
+     rootfs_target:"armsr/armv8", rootfs_url:"https://example.invalid/armv8", rootfs_sha256:"deadbeef",
+     container_arch:"aarch64", verify:true},
+    {name:"ext-unverified-1", goarch:"riscv64", goarm:"", gomips:"", gomips64:"", go386:"",
+     endian:"little", float:"hard", reason:null, tier:"extended", canary:false,
+     rootfs_target:"", rootfs_url:"", rootfs_sha256:"",
+     container_arch:"riscv64", verify:false},
+    {name:"ext-unverified-2", goarch:"arm", goarm:"6", gomips:"", gomips64:"", go386:"",
+     endian:"little", float:"hard", reason:null, tier:"extended", canary:false,
+     rootfs_target:"", rootfs_url:"", rootfs_sha256:"",
+     container_arch:"arm", verify:false}
+]' > "${ARCHES_JSON_PATH_10}"
+
+BUILT_APKS_10A="${WORKDIR}/built-apks-10a"
+PAGES_ROOT_10A="${WORKDIR}/pages-root-10a"
+CALL_LOG_10A="${WORKDIR}/call-log-10a"
+: > "${CALL_LOG_10A}"
+mk_built_apks "${BUILT_APKS_10A}" core-v1 ext-unverified-1 ext-unverified-2
+
+RC=0
+CALL_LOG="${CALL_LOG_10A}" ARCHES_JSON_PATH="${ARCHES_JSON_PATH_10}" TS_SIGN_CONCURRENCY=2 \
+    "${PUBLISH_FEED}" assemble \
+    "$(arches_json core-v1:core ext-unverified-1:extended ext-unverified-2:extended)" \
+    "${BUILT_APKS_10A}" "${PAGES_ROOT_10A}" \
+    >"${WORKDIR}/assemble-10a.log" 2>&1 || RC=$?
+
+assert_eq "10a: mixed verified+unverified publish still exits 0 (log() is informational, never fails)" "0" "${RC}"
+assert_contains "10a: names the unverified count (2)" "$(cat "${WORKDIR}/assemble-10a.log")" "2 published arch"
+assert_contains "10a: names ext-unverified-1" "$(cat "${WORKDIR}/assemble-10a.log")" "ext-unverified-1"
+assert_contains "10a: names ext-unverified-2" "$(cat "${WORKDIR}/assemble-10a.log")" "ext-unverified-2"
+assert_contains "10a: states architectural-certainty / not CI-boot-verified" \
+    "$(cat "${WORKDIR}/assemble-10a.log")" "NOT CI-boot-verified"
+assert_contains "10a: cites the RFC S7b tier" "$(cat "${WORKDIR}/assemble-10a.log")" "S7b"
+assert_not_contains "10a: does NOT list the verified arch (core-v1) among the unverified names" \
+    "$(cat "${WORKDIR}/assemble-10a.log")" "unverified tier (RFC §5.6/S7b) -- shipped on architectural certainty only, NOT CI-boot-verified: core-v1"
+
+echo
+
+echo "=== 10b. S7b: a run publishing ONLY verified arches logs the clean line, no unverified names ==="
+
+BUILT_APKS_10B="${WORKDIR}/built-apks-10b"
+PAGES_ROOT_10B="${WORKDIR}/pages-root-10b"
+CALL_LOG_10B="${WORKDIR}/call-log-10b"
+: > "${CALL_LOG_10B}"
+mk_built_apks "${BUILT_APKS_10B}" core-v1
+
+RC=0
+CALL_LOG="${CALL_LOG_10B}" ARCHES_JSON_PATH="${ARCHES_JSON_PATH_10}" TS_SIGN_CONCURRENCY=2 \
+    "${PUBLISH_FEED}" assemble "$(arches_json core-v1:core)" "${BUILT_APKS_10B}" "${PAGES_ROOT_10B}" \
+    >"${WORKDIR}/assemble-10b.log" 2>&1 || RC=$?
+
+assert_eq "10b: verified-only publish exits 0" "0" "${RC}"
+assert_contains "10b: logs the clean 'all published arches are CI-boot-verified' line" \
+    "$(cat "${WORKDIR}/assemble-10b.log")" "CI-boot-verified"
+assert_not_contains "10b: does NOT print the 'unverified tier' warning line at all" \
+    "$(cat "${WORKDIR}/assemble-10b.log")" "unverified tier"
+assert_not_contains "10b: does NOT name ext-unverified-1 (not published this run)" \
+    "$(cat "${WORKDIR}/assemble-10b.log")" "ext-unverified-1"
+assert_not_contains "10b: does NOT name ext-unverified-2 (not published this run)" \
+    "$(cat "${WORKDIR}/assemble-10b.log")" "ext-unverified-2"
+
+echo
+
 harness_finish "tests/apk/publish-feed.sh"
