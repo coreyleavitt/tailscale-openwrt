@@ -195,7 +195,12 @@ build_and_extract() {
     # stage no longer derives GOARCH from OPENWRT_ARCH's name (hard-fails
     # instead), so it must be passed explicitly.
     _goarch=$(jq -r --arg n "${_arch}" '.[] | select(.name==$n) | .goarch // ""' "${ARCHES_JSON}")
+    # RFC docs/rfc-apk-arch-coverage.md §5.1/S3: the `ipk` stage's on-device
+    # payload now comes from the repo-root scripts/stage-payload.sh, outside
+    # this Dockerfile's own build context (tailscale-package/) -- pass it in
+    # as a named additional build context (see the Dockerfile's own note).
     if ! docker build \
+        --build-context scripts="${REPO_ROOT}/scripts" \
         --build-arg TAILSCALE_VERSION="${TEST_VERSION}" \
         --build-arg PKG_RELEASE="${TEST_PKG_RELEASE}" \
         --build-arg OPENWRT_ARCH="${_arch}" \

@@ -205,8 +205,13 @@ docker build \
     -t "${BUILD_IMAGE_TAG}" -f "${PKG_DIR}/Dockerfile" "${PKG_DIR}"
 
 IPK_IMAGE_TAG="tailscale-ipk-upgradedowngrade-build:${ARCH}"
+# RFC docs/rfc-apk-arch-coverage.md §5.1/S3: the `ipk` stage's on-device
+# payload now comes from the repo-root scripts/stage-payload.sh, outside
+# this Dockerfile's own build context (tailscale-package/) -- pass it in as
+# a named additional build context (see the Dockerfile's own note).
 docker build \
     --target ipk \
+    --build-context scripts="${REPO_ROOT}/scripts" \
     --build-arg TAILSCALE_VERSION="${TEST_VERSION}" \
     --build-arg PKG_RELEASE="${TEST_PKG_RELEASE}" \
     --build-arg OPENWRT_ARCH="${ARCH}" \

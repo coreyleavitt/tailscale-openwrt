@@ -1,4 +1,10 @@
 #!/bin/bash
+# build.sh -- build the .ipk (default `docker build` target, the `ipk`
+# stage). Both docker build calls below pass `--build-context
+# scripts=${REPO_ROOT}/scripts` (RFC docs/rfc-apk-arch-coverage.md §5.1/S3):
+# the `ipk` stage's on-device payload now comes from the repo-root
+# scripts/stage-payload.sh, which lives outside this Dockerfile's own build
+# context (tailscale-package/) -- see the Dockerfile's own top-of-file note.
 set -e
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
@@ -41,6 +47,7 @@ MIPS_GOARCH=$(arch_field mips_24kc goarch)
 MIPS_GOMIPS=$(arch_field mips_24kc gomips)
 docker build \
     --progress=plain \
+    --build-context scripts="${REPO_ROOT}/scripts" \
     --build-arg TAILSCALE_VERSION=${VERSION} \
     --build-arg PKG_RELEASE=${PKG_RELEASE} \
     --build-arg OPENWRT_ARCH=mips_24kc \
@@ -75,6 +82,7 @@ echo "=== Building aarch64_cortex-a53 package ==="
 AARCH64_GOARCH=$(arch_field aarch64_cortex-a53 goarch)
 docker build \
     --progress=plain \
+    --build-context scripts="${REPO_ROOT}/scripts" \
     --build-arg TAILSCALE_VERSION=${VERSION} \
     --build-arg PKG_RELEASE=${PKG_RELEASE} \
     --build-arg OPENWRT_ARCH=aarch64_cortex-a53 \

@@ -1,6 +1,22 @@
 # Dockerfile for building Tailscale IPK packages for OpenWrt
 # Single-stage build using Tumbleweed for Go compilation, UPX compression, and packaging
 #
+# Build context requirement (RFC docs/rfc-apk-arch-coverage.md §5.1/S3): the
+# `ipk` stage's on-device payload now comes from the repo-root
+# scripts/stage-payload.sh (the single shared definition also used by the
+# host-side scripts/package-apk.sh) rather than an inline duplicate. That
+# script lives outside this Dockerfile's own build context
+# (tailscale-package/), so every `docker build` invocation that reaches the
+# `ipk` stage (default target, or `--target ipk`) MUST pass an additional
+# named build context pointing at it:
+#   --build-context scripts=<repo-root>/scripts
+# (Docker 23+/BuildKit; `docker build` defaults to the buildx/BuildKit
+# builder). Omitting it fails the build at the `COPY --from=scripts` step.
+# See tailscale-package/build.sh, .github/workflows/build-tailscale.yaml's
+# build-ipk job, tests/apk/ipk-matrix.sh, tests/apk/upgrade-downgrade.sh for
+# the flag in place. Stages that don't reach `ipk` (`build`/`apk`/
+# `apk-tools`) are unaffected.
+#
 # Build arguments:
 #   TAILSCALE_VERSION - Tailscale version to build (e.g., 1.92.2)
 #   OPENWRT_ARCH      - OpenWrt architecture (mips_24kc or aarch64_cortex-a53)
@@ -311,7 +327,7 @@ RUN echo "=== apk payload (files/) contents ===" && \
     echo "=== built .apk ===" && \
     ls -lh /out/*/*.apk
 
-# --- ipk packaging (existing path, unchanged) ---------------------------
+# --- ipk packaging (S3: on-device tree now sourced from stage-payload.sh) -
 FROM build AS ipk
 
 ARG TAILSCALE_VERSION
@@ -320,37 +336,21 @@ ARG PKG_RELEASE
 
 # Create IPK package structure
 WORKDIR /ipk
-RUN mkdir -p usr/sbin \
-    usr/bin \
-    etc/init.d \
-    etc/config \
-    www/luci-static/resources/protocol \
-    lib/upgrade/keep.d \
-    CONTROL
 
-# Copy binary
-RUN cp /build/tailscaled usr/sbin/ && \
-    chmod 755 usr/sbin/tailscaled
-
-RUN cp /tmp/files/tailscale.init etc/init.d/tailscale && \
-    cp /tmp/files/tailscale.config etc/config/tailscale && \
-    cp /tmp/files/tailscale-wrapper.sh usr/bin/tailscale && \
-    cp /tmp/files/tailscale-killswitch.sh usr/sbin/tailscale-killswitch && \
-    cp /tmp/files/tailscale-killswitch-boot.sh usr/sbin/tailscale-killswitch-boot && \
-    cp /tmp/files/tailscale-exitnode.sh usr/sbin/tailscale-exitnode && \
-    cp /tmp/files/tailscale-setup.sh usr/sbin/tailscale-setup && \
-    cp /tmp/files/luci-protocol-tailscale.js www/luci-static/resources/protocol/tailscale.js && \
-    cp /tmp/files/tailscale.keep lib/upgrade/keep.d/tailscale
-
-RUN chmod 755 etc/init.d/tailscale && \
-    chmod 600 etc/config/tailscale && \
-    chmod 755 usr/bin/tailscale && \
-    chmod 755 usr/sbin/tailscale-killswitch && \
-    chmod 755 usr/sbin/tailscale-killswitch-boot && \
-    chmod 755 usr/sbin/tailscale-exitnode && \
-    chmod 755 usr/sbin/tailscale-setup && \
-    chmod 644 www/luci-static/resources/protocol/tailscale.js && \
-    chmod 644 lib/upgrade/keep.d/tailscale
+# Format-agnostic on-device tree: ONE shared definition (RFC
+# docs/rfc-apk-arch-coverage.md §5.1/S3, "one payload source of truth"),
+# scripts/stage-payload.sh -- previously this stage duplicated the
+# apk stage's own cp+chmod block inline (drift risk between the two
+# packaging formats). scripts/ lives at the repo root, outside this
+# Dockerfile's own build context (tailscale-package/), so it's brought in
+# via a named additional build context rather than a plain COPY -- every
+# caller that builds this stage passes `--build-context
+# scripts=<repo-root>/scripts` (see build.sh, build-tailscale.yaml's
+# build-ipk job, tests/apk/ipk-matrix.sh, tests/apk/upgrade-downgrade.sh).
+# CONTROL/ (below) stays format-specific and out of stage-payload.sh.
+COPY --from=scripts stage-payload.sh /tmp/stage-payload.sh
+RUN mkdir -p CONTROL && \
+    sh /tmp/stage-payload.sh /tmp/files /ipk /build/tailscaled
 
 # Create control file
 RUN cat > CONTROL/control <<EOF
