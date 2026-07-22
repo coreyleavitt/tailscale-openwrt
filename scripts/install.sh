@@ -60,6 +60,15 @@ APK_FEED_HOST="${APK_FEED_HOST:-apk.leavitt.dev}"
 # path must match -- NOT `apk --print-arch`, which prints the bare CPU family
 # (e.g. "aarch64") that matches no per-subarch feed dir.
 APK_ARCH_FILE="${APK_ARCH_FILE:-/etc/apk/arch}"
+# Where the feed signing key and the feed's own repositories.d entry get
+# written. Overridable (like APK_ARCH_FILE above) so tests/apk/install-arch-block.sh
+# can exercise apk_path() all the way through the feed key fetch/verify and
+# up to the real `apk update`/`apk add` calls, without ever touching the
+# real /etc/apk (apk_path() is otherwise only safe to run to completion
+# inside a container -- see tests/apk/install-dispatch.sh Part 4). Production
+# installs never set either.
+APK_KEYS_DIR="${APK_KEYS_DIR:-/etc/apk/keys}"
+APK_REPOS_DIR="${APK_REPOS_DIR:-/etc/apk/repositories.d}"
 
 # SCRIPT_DIR is normally auto-detected from $0; overridable so a test can
 # source this file (where $0 is the invoking shell, not this file) and
@@ -242,6 +251,34 @@ apk_feed_key_sha256() {
     return 0
 }
 
+# >>> GENERATED infeasible-arch block (scripts/gen-install-arch-block.sh) -- do not edit by hand
+# Source: arches.json rows with reason != null (RFC docs/rfc-apk-arch-coverage.md
+# section 5.5). Regenerate via scripts/gen-install-arch-block.sh; drift from
+# arches.json is caught by tests/apk/install-arch-block.sh.
+infeasible_reason() {
+    case "$1" in
+        arm_fa526)
+            echo "ARMv4 < Go GOARM=5"
+            ;;
+        armeb_xscale)
+            echo "no big-endian ARM in Go"
+            ;;
+        powerpc64_e5500)
+            echo "POWER7-class; Go ppc64 needs POWER8"
+            ;;
+        powerpc_464fp)
+            echo "32-bit PPC (Go: ppc64/le only)"
+            ;;
+        powerpc_8548)
+            echo "32-bit PPC (Go: ppc64/le only)"
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+# <<< END GENERATED infeasible-arch block
+
 # ipk_control_field <ipk_file> <field> -- prints the value of a control
 # field (e.g. "Version", "Architecture") read directly from <ipk_file>'s own
 # control metadata via `opkg info <file>` -- opkg parses a LOCAL .ipk's
@@ -423,9 +460,23 @@ apk_path() {
     # clear 404/"no such package" instead of installing a wrong-arch build.
     # (Note: `apk --print-arch` is deliberately NOT used -- it prints the bare
     # CPU family "aarch64", which matches no per-subarch feed dir.)
-    _arch=$(head -n1 "${APK_ARCH_FILE}" 2>/dev/null)
+    # tr -d '\r': a CRLF-terminated /etc/apk/arch (observed on some sysupgrade
+    # / editor-touched images) otherwise leaves a trailing \r on _arch --
+    # invisible in a terminal but fatal here, since it silently breaks both
+    # the feed URL match below and the infeasible_reason() case match above.
+    _arch=$(head -n1 "${APK_ARCH_FILE}" 2>/dev/null | tr -d '\r')
     [ -n "${_arch}" ] || { log_error "could not read this device's apk arch from ${APK_ARCH_FILE}"; exit 1; }
     log_info "Using the apk install path -- arch ${_arch} (from ${APK_ARCH_FILE})"
+
+    # Infeasible arch (RFC docs/rfc-apk-arch-coverage.md section 5.5): Go
+    # cannot target this arch at all, so no feed will EVER carry it -- fail
+    # fast, before any apk update/feed wiring, with a clear reason rather
+    # than an eventual bare 404. infeasible_reason() (the GENERATED block
+    # above) is the single source of the reason-bearing arch set.
+    if _reason=$(infeasible_reason "${_arch}"); then
+        log_error "tailscale can't be built for ${_arch} (Go has no support: ${_reason})"
+        exit 1
+    fi
 
     # ipk -> apk coexistence preflight (RFC docs/rfc-apk-builds.md
     # section 4.1/4.7, slice D3). apk and opkg are disjoint package databases --
@@ -465,7 +516,7 @@ apk_path() {
         fi
     fi
 
-    mkdir -p /etc/apk/keys
+    mkdir -p "${APK_KEYS_DIR}"
     _key_url="${APK_FEED_SCHEME}://${APK_FEED_HOST}/apk/keys/tailscale.pem"
     log_info "Fetching the feed signing key from ${_key_url}..."
     _key_tmp=$(mktemp)
@@ -501,9 +552,9 @@ apk_path() {
     fi
 
     log_info "Feed signing key verified (sha256 ${_key_sum})"
-    mv "${_key_tmp}" /etc/apk/keys/tailscale.pem
+    mv "${_key_tmp}" "${APK_KEYS_DIR}/tailscale.pem"
 
-    mkdir -p /etc/apk/repositories.d
+    mkdir -p "${APK_REPOS_DIR}"
     # repositories.d entries are literal URLs to the index FILE itself, not
     # a base directory apk suffixes on its own -- confirmed against the
     # pinned rootfs's own customfeeds.list template comment ("http://
@@ -512,22 +563,33 @@ apk_path() {
     # here is the RFC-note's own shorthand for "the per-arch feed", but
     # what actually has to land in customfeeds.list is the full file URL.
     _feed_url="${APK_FEED_SCHEME}://${APK_FEED_HOST}/apk/${_arch}/packages.adb"
-    if [ -f /etc/apk/repositories.d/customfeeds.list ] && grep -qF "${_feed_url}" /etc/apk/repositories.d/customfeeds.list; then
-        log_info "Feed already present in /etc/apk/repositories.d/customfeeds.list"
+    _customfeeds="${APK_REPOS_DIR}/customfeeds.list"
+    if [ -f "${_customfeeds}" ] && grep -qF "${_feed_url}" "${_customfeeds}"; then
+        log_info "Feed already present in ${_customfeeds}"
     else
-        log_info "Adding ${_feed_url} to /etc/apk/repositories.d/customfeeds.list"
-        echo "${_feed_url}" >> /etc/apk/repositories.d/customfeeds.list
+        log_info "Adding ${_feed_url} to ${_customfeeds}"
+        echo "${_feed_url}" >> "${_customfeeds}"
     fi
 
+    # A feasible arch this repo simply hasn't published YET (or a transient
+    # feed-host problem) must not surface as a bare "apk update failed" --
+    # that leaves an operator guessing whether it's their arch, a typo, or a
+    # real outage. DON'T ship a hand-maintained "supported arches" list to
+    # tell the two apart up front (RFC section 5.5: it would drift, and
+    # install.sh is fetched standalone with no companion data) -- instead let
+    # apk's own 404 happen and translate it into the one thing an operator
+    # actually needs to know: this arch isn't in the feed yet.
     log_info "apk update..."
     if ! apk update; then
-        log_error "apk update failed"
+        log_error "apk update failed -- arch '${_arch}' isn't in the feed (not yet published), or ${APK_FEED_HOST} is unreachable"
+        log_error "Feed URL: ${_feed_url}"
         exit 1
     fi
 
     log_info "apk add tailscale (trusted -- no --allow-untrusted)..."
     if ! apk add tailscale; then
-        log_error "apk add tailscale failed"
+        log_error "apk add tailscale failed -- arch '${_arch}' isn't in the feed (not yet published), or tailscale isn't available for it there"
+        log_error "Feed URL: ${_feed_url}"
         exit 1
     fi
 
