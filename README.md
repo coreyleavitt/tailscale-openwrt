@@ -14,6 +14,28 @@ Pre-built Tailscale packages for OpenWrt routers with automatic network/firewall
 
 ## Supported Architectures
 
+**apk feed (OpenWrt 25.12+):** the signed feed publishes every
+Go-targetable OpenWrt architecture -- 30 arches across 14 build families --
+so `apk add tailscale` works generically, keyed off the device's own
+`/etc/apk/arch`:
+
+```bash
+apk add tailscale   # arch is read automatically from /etc/apk/arch
+```
+
+A `404` on `apk update` means either a handful of arches Go itself cannot
+target (never published -- the installer detects and names these before
+touching the feed) or a transient publish gap, not a hard cap on coverage.
+See the [Installation Guide](docs/INSTALL.md#option-3-openwrt-2512-apk-feed)
+for the full arch table (`arches.json`) and the
+[unverified tier](docs/INSTALL.md#unverified-tier) (arches that are built
+and published but not CI-boot-verified).
+
+**ipk releases (OpenWrt 22.03-24.10):** four device-targeted arches, built
+and downloadable from [Releases](https://github.com/coreyleavitt/tailscale-openwrt/releases)
+(ipk does not widen with the apk feed -- see
+[docs/MAINTAINING.md](docs/MAINTAINING.md)):
+
 | Architecture | Devices | OpenWrt Version |
 |-------------|---------|-----------------|
 | aarch64_cortex-a53 | GL-MT2500, GL-MT3000, Cudy M3000 | 22.03+ |
@@ -73,8 +95,10 @@ echo "https://apk.leavitt.dev/apk/$(head -n1 /etc/apk/arch)/packages.adb" >> /et
 apk update && apk add tailscale
 ```
 
-`apk update` will 404 if your arch isn't published yet (currently the four
-above). See the [Installation Guide](docs/INSTALL.md#option-3-openwrt-2512-apk-feed)
+The feed publishes all Go-targetable OpenWrt arches (see
+[Supported Architectures](#supported-architectures)); `apk update` 404s only
+if your specific arch isn't published yet or isn't Go-targetable at all. See
+the [Installation Guide](docs/INSTALL.md#option-3-openwrt-2512-apk-feed)
 for uninstalling, downgrading, and mirroring the feed.
 
 **Note:** the LuCI web UI ([luci-app-tailscale](https://github.com/coreyleavitt/luci-app-tailscale))

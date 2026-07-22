@@ -93,10 +93,49 @@ apk add tailscale
 The arch comes from `/etc/apk/arch` (your device's exact package arch, e.g.
 `aarch64_cortex-a53` on MediaTek Filogic). Use that file, **not**
 `apk --print-arch`, which prints the bare CPU family (`aarch64`) that matches
-no feed directory. `apk update` will 404 if your arch isn't published yet --
-currently `aarch64_cortex-a53`, `arm_cortex-a7`, `mips_24kc`, `mipsel_24kc`
-(see [Supported Architectures](../README.md#supported-architectures));
-broader coverage is planned.
+no feed directory. The feed publishes **every Go-targetable OpenWrt
+architecture** -- 30 feasible arches across 14 build families (the full
+table lives in [`arches.json`](../arches.json)) -- so `apk update` should
+find whatever `/etc/apk/arch` reports. A 404 means one of two things:
+
+- Your arch is one of the small set Go itself cannot target at all (pre-GOARM=5
+  ARM, big-endian ARM, or 32-bit/sub-POWER8 PowerPC) -- never published, and
+  `scripts/install.sh` detects and names these before it ever touches the
+  feed.
+- A transient publish gap for a newly-added arch.
+
+See [Supported Architectures](../README.md#supported-architectures) for the
+apk-vs-ipk split, and the [unverified tier](#unverified-tier) below for
+arches that are published but not CI-boot-verified.
+
+#### Unverified tier
+
+Most published arches are CI-boot-verified: a real 25.12 rootfs boots under
+qemu-user in CI and confirms the arch's own binary runs. A handful ship on
+**architectural certainty** instead -- their build family has no bootable
+generic OpenWrt 25.12 rootfs available upstream, so CI can never qemu-verify
+them (RFC `docs/rfc-apk-arch-coverage.md` §5.6, families A6HF/ASOFT/M32LEHF/
+RV64). `apk add tailscale` still builds, signs, and installs identically on
+these -- only the automated boot-test signal is missing. As of this writing,
+the unverified-tier arches are (kept in sync with `scripts/families.sh
+--unverified-arches` by `tests/apk/docs-arch-coverage.sh`):
+
+<!-- BEGIN unverified-tier-arches (drift-guarded by tests/apk/docs-arch-coverage.sh; regenerate with `scripts/families.sh --unverified-arches`) -->
+- `arm_arm1176jzf-s_vfp`
+- `arm_arm926ej-s`
+- `arm_cortex-a7`
+- `arm_cortex-a9`
+- `arm_xscale`
+- `mipsel_24kc_24kf`
+- `riscv64_generic`
+<!-- END unverified-tier-arches -->
+
+`publish-feed.sh`'s `assemble` step logs the intersection of this set with
+whatever a given run actually publishes, so coverage is never silently
+overstated. Separately, five arches are **infeasible** -- Go cannot target
+them at all (see `arches.json`'s `reason` field for the specific reason per
+arch) -- and are never published; `scripts/install.sh` refuses them with the
+specific reason before making any network call.
 
 Or use the one-line installer, which does all of the above plus a
 `ca-bundle` preflight (the feed is HTTPS and needs `ca-bundle` for TLS trust,
@@ -554,16 +593,29 @@ real verification container in `tests/apk/upgrade-downgrade.sh`.
 
 apk trust is **index-content-based**, not tied to a specific host: `apk`
 verifies the signed `packages.adb` against your pinned `tailscale.pem`
-regardless of where it was fetched from. To mirror this feed:
+regardless of where it was fetched from. The feed now has one `apk/<arch>/`
+directory per published arch (up to 30) rather than the historical four --
+you don't need to mirror all of them, only the arch(es) you actually run.
+To mirror this feed:
 
-1. Copy `apk/<arch>/packages.adb` and `apk/<arch>/*.apk` for each arch you
-   need, plus `apk/keys/tailscale.pem`, to any HTTPS host.
+1. Copy `apk/<arch>/packages.adb` and `apk/<arch>/*.apk` for **each arch you
+   need** (any subset of the published `apk/<arch>/` dirs), plus
+   `apk/keys/tailscale.pem`, to any HTTPS host.
 2. Point `/etc/apk/repositories.d/customfeeds.list` at your mirror's
    `packages.adb` URL instead of `apk.leavitt.dev`'s.
 
 A re-hosted copy still verifies correctly as long as the files are copied
-byte-for-byte -- signature verification happens entirely on the device, so
-mirroring needs no re-signing or key exchange.
+byte-for-byte -- signature verification happens entirely on the device
+against the EC signature already embedded in `packages.adb`, so mirroring
+needs no re-signing or key exchange, regardless of which arch(es) you chose
+to mirror.
+
+**SBOM note.** Each `.apk` you mirror is one of only 14 distinct built
+binaries (one per build family) re-tagged with a per-arch `arch:` field for
+apk's own trust model -- there's no cross-arch dedup on the feed itself, but
+if you're mirroring release-asset SBOM/attestation data alongside the
+packages, see [docs/MAINTAINING.md](MAINTAINING.md#sbom-per-family) for what
+"per family" does and doesn't mean today.
 
 ## Important Notes
 
