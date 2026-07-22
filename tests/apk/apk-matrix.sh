@@ -1,38 +1,56 @@
 #!/bin/sh
 # tests/apk/apk-matrix.sh
 #
-# Slice C1b test (RFC docs/rfc-apk-builds.md §6): a SEPARATE apk build
-# matrix job (`build-apk`), keyed off the same arches.json/select-matrix
-# source as C1a's `build-ipk`, producing arch-namespaced `.apk` artifacts.
-# The load-bearing property (RFC §4.6) is that `build-apk` is a DAG
-# SIBLING of `build-ipk` -- its own `needs: [select-matrix]`, never
-# needs-chained through `build-ipk` and never a step inside it -- so a
-# later slice (C5) can make apk failures non-blocking to the ipk release
-# purely by changing `if:`/`needs:` wiring, with no restructuring. Four
-# checks, all structural (the `apk` Dockerfile stage / build-apk.sh
-# build path was already proven empirically in A2/A5b; this slice is
-# purely about workflow DAG shape):
+# Slice C1b test (RFC docs/rfc-apk-builds.md §6), RESTRUCTURED for slice S4
+# (RFC docs/rfc-apk-arch-coverage.md §5.1/§5.3/§5.8): `build-apk` is a
+# SEPARATE job from `build-ipk`, producing arch-namespaced `.apk`
+# artifacts. The load-bearing DAG property (RFC §4.6) is unchanged --
+# `build-apk` is a DAG SIBLING of `build-ipk`, its own
+# `needs: [select-matrix]`, never needs-chained through `build-ipk` and
+# never a step inside it -- so a later slice can make apk failures
+# non-blocking to the ipk release purely by changing `if:`/`needs:` wiring,
+# with no restructuring.
+#
+# S4 restructure: `build-apk` no longer matrixes over the flat arches list
+# (that's build-ipk's source, decoupled on purpose now -- ipk must not
+# widen). It matrixes over select-matrix's FAMILIES output instead --
+# compile ONCE per family (`docker build --target build`), then an in-job
+# shell loop packages that family's gated arches host-side via
+# scripts/package-apk.sh (RFC §5.3 "no second matrix stage"). The
+# Dockerfile `apk` stage this job used to build via `--target apk` was
+# DELETED this slice; `docker build --target apk` must not appear anywhere
+# in the workflow any more. Checks, all structural (the family-compile +
+# host-side-package path itself is proven empirically by
+# tests/apk/{mkpkg,install}.sh and this file's own --build one-arch smoke
+# test below; this file is purely about workflow DAG/wiring shape):
 #
 #   (a) `build-apk` is a matrix job driven by
-#       needs.select-matrix.outputs.arches (same source as build-ipk).
+#       needs.select-matrix.outputs.families (NOT .arches -- that's
+#       build-ipk's source now, deliberately decoupled).
 #   (b) sibling, not nested: `build-apk` does not appear in `build-ipk`'s
 #       `needs` and vice versa; both are independent top-level entries in
 #       `jobs:` (never a step-list entry inside the other).
 #   (c) each matrix leg uploads an arch-namespaced artifact (name and path
-#       both keyed by matrix.arch.name) -- NOT a flat/shared name, which
-#       would collide across arches since all four build an identically
-#       named tailscale-<version>.apk (RFC §3/§4.3). Also guards against a
-#       `merge-multiple: true` download step flattening the apk artifacts.
-#   (d) the workflow YAML parses (well-formed).
+#       both keyed by matrix.family.arches[0]) -- NOT a flat/shared name,
+#       which would collide across arches since they'd all build an
+#       identically named tailscale-<version>.apk (RFC §3/§4.3). Also
+#       guards against a `merge-multiple: true` download step flattening
+#       the apk artifacts, AND asserts a preceding step hard-fails the job
+#       if a family ever carries more than the single gated arch this
+#       upload wiring assumes (rather than silently dropping extras).
+#   (d) the workflow YAML parses (well-formed); `--target apk` appears
+#       nowhere in it any more; build-apk's compile step targets `build`
+#       and its packaging step calls scripts/package-apk.sh.
 #
-# Optional (--build): actually run `docker build --target apk` for one
-# arch (aarch64_cortex-a53) via tailscale-package/build-apk.sh, the exact
-# path the new job's steps invoke, and assert a non-empty .apk lands.
-# Skipped by default -- the apk stage itself was already proven in A2/A5b
-# (adbdump-verified name/version/arch/depends, real install under qemu);
-# this slice does not change that stage, only where it's invoked from, so
-# a full rebuild adds build time without adding coverage. Pass --build to
-# opt in.
+# Optional (--build): actually run the family-binary compile
+# (`docker build --target build`) + host-side package
+# (scripts/package-apk.sh) for one arch (aarch64_cortex-a53) via
+# tailscale-package/build-apk.sh (S4-migrated, mirrors the new job's own
+# steps), and assert a non-empty .apk lands. Skipped by default -- that
+# path is already proven in A2/A5b/S3 (adbdump-verified
+# name/version/arch/depends, real install under qemu); this file's default
+# run is about workflow DAG shape, not re-proving the build path. Pass
+# --build to opt in.
 #
 # Usage: sh tests/apk/apk-matrix.sh [--build]
 
@@ -94,14 +112,18 @@ ipk_needs = needs_list(ipk_job)
 result["apk_needs"] = sorted(apk_needs)
 result["ipk_needs"] = sorted(ipk_needs)
 
-# (a) matrix driven by needs.select-matrix.outputs.arches
+# (a) S4 restructure: build-apk matrixes over select-matrix's FAMILIES
+# output (compile once per family), NOT its flat arches output (that's
+# build-ipk's source, unchanged) -- RFC docs/rfc-apk-arch-coverage.md
+# §5.1/§5.3/S4.
 apk_strategy = apk_job.get("strategy", {}) or {}
 apk_matrix = apk_strategy.get("matrix", {}) or {}
-apk_arch_expr = str(apk_matrix.get("arch", ""))
-result["apk_matrix_arch_expr"] = apk_arch_expr
-result["apk_matrix_from_select_matrix"] = (
-    "needs.select-matrix.outputs.arches" in apk_arch_expr
+apk_family_expr = str(apk_matrix.get("family", ""))
+result["apk_matrix_family_expr"] = apk_family_expr
+result["apk_matrix_from_select_matrix_families"] = (
+    "needs.select-matrix.outputs.families" in apk_family_expr
 )
+result["apk_matrix_has_no_arch_key"] = "arch" not in apk_matrix
 
 # (b) sibling, not nested: neither job appears in the other's `needs`, and
 # each is its own top-level `jobs:` entry (a job can only be referenced via
@@ -117,11 +139,14 @@ result["build_apk_is_step_in_ipk"] = "build-apk" in ipk_steps_text
 result["build_ipk_is_step_in_apk"] = "build-ipk" in apk_steps_text
 
 # (c) arch-namespaced artifact upload: find upload-artifact steps in
-# build-apk, check `name:` and `path:` are both keyed by matrix.arch.name
-# (so no two matrix legs ever share a name), and confirm the workflow
-# nowhere downloads apk-namespaced artifacts with merge-multiple: true
-# (that would flatten distinct arches' identically-named .apk files into
-# one dir and collide -- RFC §3/§4.3).
+# build-apk, check `name:` and `path:` are both keyed by an arch name (S4:
+# matrix.family.arches[0] -- see the build-apk job-level "KNOWN SCOPE
+# LIMIT" comment; a family job's upload step is wired for exactly the
+# family's one gated arch, guarded by a preceding step that hard-fails if a
+# family ever carries more than one), and confirm the workflow nowhere
+# downloads apk-namespaced artifacts with merge-multiple: true (that would
+# flatten distinct arches' identically-named .apk files into one dir and
+# collide -- RFC §3/§4.3).
 upload_steps = [
     s for s in apk_job.get("steps", []) or []
     if "upload-artifact" in str(s.get("uses", ""))
@@ -134,11 +159,21 @@ result["apk_upload_paths"] = [
     str((s.get("with", {}) or {}).get("path", "")) for s in upload_steps
 ]
 result["apk_upload_name_arch_namespaced"] = all(
-    "matrix.arch.name" in n for n in result["apk_upload_names"]
+    "matrix.family.arches[0]" in n for n in result["apk_upload_names"]
 ) and len(upload_steps) > 0
 result["apk_upload_path_arch_namespaced"] = all(
-    "matrix.arch.name" in p for p in result["apk_upload_paths"]
+    "matrix.family.arches[0]" in p for p in result["apk_upload_paths"]
 ) and len(upload_steps) > 0
+
+# S4 guard: a preceding step must hard-fail the job if a family ever
+# carries more than the 1 gated arch this upload wiring assumes (rather
+# than silently uploading only arches[0] and dropping the rest).
+apk_run_texts = " ".join(
+    str(s.get("run", "")) for s in apk_job.get("steps", []) or []
+)
+result["apk_has_single_arch_upload_guard"] = (
+    "arches" in apk_run_texts and "jq 'length'" in apk_run_texts
+)
 
 # Guard: no download-artifact step anywhere in the workflow merge-multiples
 # an apk-* artifact pattern into a flat dir.
@@ -154,6 +189,16 @@ for name, job in jobs.items():
             bad_merge = True
 result["apk_flat_merge_present"] = bad_merge
 
+# S4: `docker build --target apk` must not appear ANYWHERE in the workflow
+# any more -- the Dockerfile stage it targeted was deleted this slice.
+result["workflow_has_target_apk"] = "--target apk" in json.dumps(doc) or "target: apk" in json.dumps(doc)
+
+# S4: build-apk's compile step targets `build` (the family binary), not the
+# deleted `apk` stage.
+apk_run_all = " ".join(str(s.get("run", "")) for s in apk_job.get("steps", []) or [])
+result["apk_job_targets_build_stage"] = "--target build" in apk_run_all
+result["apk_job_calls_package_apk_sh"] = "package-apk.sh" in apk_run_all
+
 print(json.dumps(result))
 PYEOF
 )
@@ -162,8 +207,10 @@ assert_eq "workflow YAML parses" "true" "$(echo "${STRUCT_JSON}" | jq -r '.yaml_
 assert_eq "build-ipk job present (untouched by this slice)" "true" "$(echo "${STRUCT_JSON}" | jq -r '.has_build_ipk')"
 assert_eq "build-apk job present" "true" "$(echo "${STRUCT_JSON}" | jq -r '.has_build_apk')"
 
-assert_eq "build-apk matrix driven by needs.select-matrix.outputs.arches" "true" \
-    "$(echo "${STRUCT_JSON}" | jq -r '.apk_matrix_from_select_matrix')"
+assert_eq "build-apk matrix driven by needs.select-matrix.outputs.families (S4)" "true" \
+    "$(echo "${STRUCT_JSON}" | jq -r '.apk_matrix_from_select_matrix_families')"
+assert_eq "build-apk matrix has no arch key (compiles per family, not per arch)" "true" \
+    "$(echo "${STRUCT_JSON}" | jq -r '.apk_matrix_has_no_arch_key')"
 
 assert_eq "build-apk needs == [select-matrix] only" '["select-matrix"]' \
     "$(echo "${STRUCT_JSON}" | jq -c '.apk_needs')"
@@ -179,18 +226,40 @@ assert_eq "build-ipk is not a step inside build-apk" "false" \
 
 assert_eq "build-apk uploads at least one artifact" "true" \
     "$([ "$(echo "${STRUCT_JSON}" | jq -r '.apk_upload_step_count')" -gt 0 ] && echo true || echo false)"
-assert_eq "apk artifact name is arch-namespaced (matrix.arch.name)" "true" \
+assert_eq "apk artifact name is arch-namespaced (matrix.family.arches[0])" "true" \
     "$(echo "${STRUCT_JSON}" | jq -r '.apk_upload_name_arch_namespaced')"
-assert_eq "apk artifact path is arch-namespaced (matrix.arch.name)" "true" \
+assert_eq "apk artifact path is arch-namespaced (matrix.family.arches[0])" "true" \
     "$(echo "${STRUCT_JSON}" | jq -r '.apk_upload_path_arch_namespaced')"
+assert_eq "build-apk hard-fails if a family ever has >1 gated arch (upload wiring guard)" "true" \
+    "$(echo "${STRUCT_JSON}" | jq -r '.apk_has_single_arch_upload_guard')"
 assert_eq "no merge-multiple flatten of apk-* artifacts anywhere in workflow" "false" \
     "$(echo "${STRUCT_JSON}" | jq -r '.apk_flat_merge_present')"
 
 echo
 
-# --- matrix source equivalence with build-ipk ---------------------------
+# --- S4: the deleted Dockerfile apk stage is gone from the workflow too ---
 
-echo "=== build-apk matrix source == build-ipk matrix source ==="
+echo "=== S4: 'docker build --target apk' no longer appears anywhere in the workflow ==="
+
+assert_eq "workflow nowhere targets the deleted 'apk' Dockerfile stage" "false" \
+    "$(echo "${STRUCT_JSON}" | jq -r '.workflow_has_target_apk')"
+assert_eq "build-apk's compile step targets the 'build' stage (family binary)" "true" \
+    "$(echo "${STRUCT_JSON}" | jq -r '.apk_job_targets_build_stage')"
+assert_eq "build-apk's packaging step calls scripts/package-apk.sh (host-side)" "true" \
+    "$(echo "${STRUCT_JSON}" | jq -r '.apk_job_calls_package_apk_sh')"
+
+echo
+
+# --- build-apk matrix source is DECOUPLED from build-ipk's (S4) ---------
+#
+# Before S4, build-apk and build-ipk deliberately shared the identical
+# per-arch matrix expression (C1b). S4 decouples them on purpose: build-ipk
+# still matrixes over the flat arches output (ipk must not widen, RFC
+# non-goals), while build-apk now matrixes over the families output
+# (compile once per family). Assert the decoupling directly, rather than
+# asserting equality (which would now be testing the wrong invariant).
+
+echo "=== build-apk (families) is deliberately decoupled from build-ipk (arches) ==="
 
 IPK_ARCH_EXPR=$(python3 - "${WORKFLOW}" <<'PYEOF'
 import sys, yaml
@@ -201,10 +270,12 @@ matrix = ((job.get("strategy", {}) or {}).get("matrix", {}) or {})
 print(str(matrix.get("arch", "")))
 PYEOF
 )
-APK_ARCH_EXPR=$(echo "${STRUCT_JSON}" | jq -r '.apk_matrix_arch_expr')
+assert_contains "build-ipk's matrix still reads needs.select-matrix.outputs.arches (unchanged)" \
+    "${IPK_ARCH_EXPR}" "needs.select-matrix.outputs.arches"
 
-assert_eq "build-apk and build-ipk read the identical matrix expression" \
-    "${IPK_ARCH_EXPR}" "${APK_ARCH_EXPR}"
+FAMILY_EXPR=$(echo "${STRUCT_JSON}" | jq -r '.apk_matrix_family_expr')
+assert_contains "build-apk's matrix reads needs.select-matrix.outputs.families (S4)" \
+    "${FAMILY_EXPR}" "needs.select-matrix.outputs.families"
 
 echo
 

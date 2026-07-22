@@ -14,8 +14,9 @@
 # builder). Omitting it fails the build at the `COPY --from=scripts` step.
 # See tailscale-package/build.sh, .github/workflows/build-tailscale.yaml's
 # build-ipk job, tests/apk/ipk-matrix.sh, tests/apk/upgrade-downgrade.sh for
-# the flag in place. Stages that don't reach `ipk` (`build`/`apk`/
-# `apk-tools`) are unaffected.
+# the flag in place. Stages that don't reach `ipk` (`build`/`apk-tools`) are
+# unaffected. (The `apk` stage this note used to also list was DELETED in S4
+# -- apk packaging is host-side now, see the S4 note further down.)
 #
 # Build arguments:
 #   TAILSCALE_VERSION - Tailscale version to build (e.g., 1.92.2)
@@ -139,11 +140,13 @@ RUN curl -o /usr/local/bin/opkg-build \
 
 # Download and extract Tailscale source
 WORKDIR /build
-# tailscale.tar.gz is intentionally kept (not rm'd) -- the apk stage below
-# reads its mtime for SOURCE_DATE_EPOCH (RFC §3: GitHub sets archive mtimes
-# to the tagged commit time, so this is stable across re-runs of the same
-# tailscale_version, unlike `git log` against this repo's own HEAD -- and
-# there is no .git in this build context anyway).
+# tailscale.tar.gz is intentionally kept (not rm'd) -- callers that need a
+# SOURCE_DATE_EPOCH (host-side scripts/package-apk.sh, via `docker run
+# --entrypoint stat ... -c %Y /build/tailscale.tar.gz`, S4) read its mtime
+# (RFC §3: GitHub sets archive mtimes to the tagged commit time, so this is
+# stable across re-runs of the same tailscale_version, unlike `git log`
+# against this repo's own HEAD -- and there is no .git in this build context
+# anyway).
 RUN curl -L "https://github.com/tailscale/tailscale/archive/refs/tags/v${TAILSCALE_VERSION}.tar.gz" -o tailscale.tar.gz && \
     tar -xzf tailscale.tar.gz && \
     mv tailscale-${TAILSCALE_VERSION} tailscale
@@ -220,112 +223,24 @@ RUN if [ "$SKIP_UPX" = "1" ]; then \
 # Show compressed size
 RUN echo "Compressed binary size:" && ls -lh /build/tailscaled
 
-# Payload sources, shared by both the ipk and apk stages below.
+# Payload sources, shared by the ipk stage below (and, host-side, by
+# scripts/package-apk.sh via scripts/stage-payload.sh).
 # Note: netifd protocol handler intentionally NOT included - it interferes with
 # Tailscale's routing table management. We use proto='none' instead.
 COPY src/ /tmp/files/
 
-# --- apk packaging (A2, RFC §3/§4.1) -------------------------------------
-# Placed textually BEFORE the `ipk` stage so that a default `docker build`
-# (no --target, as build.sh uses) still resolves to the `ipk` stage as its
-# final image, byte-for-byte identical to before this stage existed --
-# `ipk` does not depend on `apk`, so a dependency-aware builder never even
-# builds this stage unless explicitly targeted (`--target apk`, as
-# build-apk.sh / tests/apk/mkpkg.sh do).
-FROM build AS apk
-
-ARG TAILSCALE_VERSION
-ARG OPENWRT_ARCH
-ARG PKG_RELEASE
-
-# $PKGROOT build root (RFC §4.1): `files/` (= $ADIR) is the on-device
-# payload ONLY -- no CONTROL/, no maintainer scripts -- and `scripts/` is a
-# SIBLING directory, never nested under files/, so `--files "$ADIR"` cannot
-# payload-ify the maintainer scripts regardless of `mkpkg` behavior.
-WORKDIR /pkgroot
-RUN mkdir -p files/usr/sbin \
-    files/usr/bin \
-    files/etc/init.d \
-    files/etc/config \
-    files/www/luci-static/resources/protocol \
-    files/lib/apk/packages \
-    files/lib/upgrade/keep.d \
-    scripts
-
-# Copy binary
-RUN cp /build/tailscaled files/usr/sbin/tailscaled && \
-    chmod 755 files/usr/sbin/tailscaled
-
-# Same payload the ipk build assembles (RFC §4.1) -- reuse verbatim.
-RUN cp /tmp/files/tailscale.init files/etc/init.d/tailscale && \
-    cp /tmp/files/tailscale.config files/etc/config/tailscale && \
-    cp /tmp/files/tailscale-wrapper.sh files/usr/bin/tailscale && \
-    cp /tmp/files/tailscale-killswitch.sh files/usr/sbin/tailscale-killswitch && \
-    cp /tmp/files/tailscale-killswitch-boot.sh files/usr/sbin/tailscale-killswitch-boot && \
-    cp /tmp/files/tailscale-exitnode.sh files/usr/sbin/tailscale-exitnode && \
-    cp /tmp/files/tailscale-setup.sh files/usr/sbin/tailscale-setup && \
-    cp /tmp/files/luci-protocol-tailscale.js files/www/luci-static/resources/protocol/tailscale.js && \
-    chmod 755 files/etc/init.d/tailscale && \
-    chmod 600 files/etc/config/tailscale && \
-    chmod 755 files/usr/bin/tailscale && \
-    chmod 755 files/usr/sbin/tailscale-killswitch && \
-    chmod 755 files/usr/sbin/tailscale-killswitch-boot && \
-    chmod 755 files/usr/sbin/tailscale-exitnode && \
-    chmod 755 files/usr/sbin/tailscale-setup && \
-    chmod 644 files/www/luci-static/resources/protocol/tailscale.js
-
-# Conffiles list staged INSIDE files/ at apk's magic path (RFC §4.1/§3).
-RUN echo "/etc/config/tailscale" > files/lib/apk/packages/tailscale.conffiles
-
-# Sysupgrade keep-list: tells OpenWrt's sysupgrade to preserve the whole
-# /etc/tailscale/ dir (tailscaled.state + derpmap.cached.json) across a
-# firmware upgrade -- without this, sysupgrade wipes the node's identity,
-# forcing re-auth (and re-approval of subnet routes) on every upgrade.
-RUN cp /tmp/files/tailscale.keep files/lib/upgrade/keep.d/tailscale && \
-    chmod 644 files/lib/upgrade/keep.d/tailscale
-
-# Maintainer scripts as SIBLINGS of files/ (never under $ADIR). Reuse
-# src/tailscale.{postinst,prerm,postrm} *logic* verbatim, renamed to apk's
-# lifecycle hook names (RFC §4.1). The IPKG_INSTROOT guard is slice A3a --
-# used as-is, unguarded, for now.
-RUN cp /tmp/files/tailscale.postinst scripts/post-install && \
-    cp /tmp/files/tailscale.prerm scripts/pre-deinstall && \
-    cp /tmp/files/tailscale.postrm scripts/post-deinstall && \
-    chmod 755 scripts/post-install scripts/pre-deinstall scripts/post-deinstall
-
-# Build the .apk (RFC §3 canonical recipe). SOURCE_DATE_EPOCH is the source
-# tarball's mtime (GitHub sets archive mtimes to the tagged commit time),
-# NOT `git log` (no .git in this build context) and NOT 0 (1970 on-device
-# mtimes are indistinguishable from an unsynced RTC). fakeroot is redundant
-# here (A1: mkpkg records nobody:nobody regardless of live-FS ownership).
-# Version maps ${TAILSCALE_VERSION}-${PKG_RELEASE} -> ${TAILSCALE_VERSION}-r${PKG_RELEASE}.
-# Output path is arch-namespaced (arch in the PATH, not the filename).
-RUN SOURCE_DATE_EPOCH="$(stat -c %Y /build/tailscale.tar.gz)" && \
-    echo "SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH} (from /build/tailscale.tar.gz mtime)" && \
-    APK_VERSION="${TAILSCALE_VERSION}-r${PKG_RELEASE}" && \
-    mkdir -p "/out/${OPENWRT_ARCH}" && \
-    SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH}" apk mkpkg \
-      --info "name:tailscale" \
-      --info "version:${APK_VERSION}" \
-      --info "arch:${OPENWRT_ARCH}" \
-      --info "description:Tailscale VPN client for OpenWrt" \
-      --info "license:BSD-3-Clause" \
-      --info "maintainer:Community Build" \
-      --info "depends:kmod-tun ca-bundle ip-full conntrack" \
-      --files "/pkgroot/files" \
-      --script "post-install:/pkgroot/scripts/post-install" \
-      --script "pre-deinstall:/pkgroot/scripts/pre-deinstall" \
-      --script "post-deinstall:/pkgroot/scripts/post-deinstall" \
-      --output "/out/${OPENWRT_ARCH}/tailscale-${APK_VERSION}.apk"
-
-# Debug: show what went into files/ (= $ADIR; must contain no CONTROL/, no
-# scripts/) and the built .apk.
-RUN echo "=== apk payload (files/) contents ===" && \
-    find /pkgroot/files -type f | sort && \
-    echo "=== apk build-only siblings (NOT shipped) ===" && \
-    find /pkgroot/scripts -type f | sort && \
-    echo "=== built .apk ===" && \
-    ls -lh /out/*/*.apk
+# --- apk packaging -- REMOVED (RFC docs/rfc-apk-arch-coverage.md §5.1/S4) -
+# The `apk` Dockerfile stage (`FROM build AS apk`) that used to live here was
+# DELETED this slice: apk packaging is now a host-side step
+# (scripts/package-apk.sh, wrapping the same `apk mkpkg` recipe over
+# scripts/stage-payload.sh's shared on-device tree), never a second Docker
+# build. Compiling stays per-family (`docker build --target build`, this
+# stage); packaging runs per-arch on the host afterward, once per arch in a
+# family, reusing the one compiled binary (RFC §5.1/§5.3 "decouple compile
+# from packaging"). `docker build --target apk` no longer exists anywhere in
+# this repo -- every former caller (the `build-apk` CI job, `apk-install-verify`,
+# tests/apk/{mkpkg,apk-matrix,install,sign-verify,install-dispatch,
+# upgrade-downgrade}.sh) was migrated to `--target build` + package-apk.sh.
 
 # --- ipk packaging (S3: on-device tree now sourced from stage-payload.sh) -
 FROM build AS ipk

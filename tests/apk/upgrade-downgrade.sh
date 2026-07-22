@@ -195,14 +195,6 @@ echo "### Building current-version (${EXPECT_VERSION}) apk + ipk stages"
 echo "############################################"
 
 BUILD_IMAGE_TAG="tailscale-apk-upgradedowngrade-build:${ARCH}"
-docker build \
-    --target apk \
-    --build-arg TAILSCALE_VERSION="${TEST_VERSION}" \
-    --build-arg PKG_RELEASE="${TEST_PKG_RELEASE}" \
-    --build-arg OPENWRT_ARCH="${ARCH}" \
-    --build-arg GOARCH="${GOARCH}" \
-    --build-arg SKIP_UPX=1 \
-    -t "${BUILD_IMAGE_TAG}" -f "${PKG_DIR}/Dockerfile" "${PKG_DIR}"
 
 IPK_IMAGE_TAG="tailscale-ipk-upgradedowngrade-build:${ARCH}"
 # RFC docs/rfc-apk-arch-coverage.md §5.1/S3: the `ipk` stage's on-device
@@ -219,13 +211,21 @@ docker build \
     --build-arg SKIP_UPX=1 \
     -t "${IPK_IMAGE_TAG}" -f "${PKG_DIR}/Dockerfile" "${PKG_DIR}"
 
+# RFC docs/rfc-apk-arch-coverage.md §5.1/S4: `docker build --target apk` no
+# longer exists -- compile the family binary (`--target build`, tagged
+# BUILD_IMAGE_TAG so build_stub_repo/the IDX_CID step further below can
+# still find `apk` inside it) then package host-side via
+# scripts/package-apk.sh, both wrapped by tests/apk/lib.sh's build_apk_host.
 mkdir -p "${WORKDIR}/repo"
-NCID=$(docker create "${BUILD_IMAGE_TAG}")
-track "${NCID}"
-docker cp "${NCID}:/out/${ARCH}/tailscale-${EXPECT_VERSION}.apk" "${WORKDIR}/repo/"
-untrack_and_remove "${NCID}"
+if ! build_apk_host "${PKG_DIR}" "${ARCH}" \
+        "${GOARCH}" "" "" "" "" \
+        "${TEST_VERSION}" "${TEST_PKG_RELEASE}" \
+        "${WORKDIR}/repo/tailscale-${EXPECT_VERSION}.apk" "${BUILD_IMAGE_TAG}"; then
+    log_fail "current-version build_apk_host (compile + package) failed"
+    harness_finish "tests/apk/upgrade-downgrade.sh"
+fi
 if [ ! -s "${WORKDIR}/repo/tailscale-${EXPECT_VERSION}.apk" ]; then
-    log_fail "current-version .apk missing/empty after extraction"
+    log_fail "current-version .apk missing/empty after build_apk_host"
     harness_finish "tests/apk/upgrade-downgrade.sh"
 fi
 echo "OK: built tailscale-${EXPECT_VERSION}.apk"
@@ -492,22 +492,20 @@ echo "############################################"
 echo "### Part B: tested downgrade (real version delta, ${EXPECT_VERSION} -> ${EXPECT_OLD_VERSION})"
 echo "############################################"
 
+# RFC docs/rfc-apk-arch-coverage.md §5.1/S4: `docker build --target apk` no
+# longer exists -- compile the family binary (`--target build`) then
+# package host-side via scripts/package-apk.sh, both wrapped by
+# tests/apk/lib.sh's build_apk_host.
 OLD_BUILD_IMAGE_TAG="tailscale-apk-upgradedowngrade-old:${ARCH}"
-docker build \
-    --target apk \
-    --build-arg TAILSCALE_VERSION="${OLD_VERSION}" \
-    --build-arg PKG_RELEASE="${OLD_PKG_RELEASE}" \
-    --build-arg OPENWRT_ARCH="${ARCH}" \
-    --build-arg GOARCH="${GOARCH}" \
-    --build-arg SKIP_UPX=1 \
-    -t "${OLD_BUILD_IMAGE_TAG}" -f "${PKG_DIR}/Dockerfile" "${PKG_DIR}"
-
-OCID=$(docker create "${OLD_BUILD_IMAGE_TAG}")
-track "${OCID}"
-docker cp "${OCID}:/out/${ARCH}/tailscale-${EXPECT_OLD_VERSION}.apk" "${WORKDIR}/repo/"
-untrack_and_remove "${OCID}"
+if ! build_apk_host "${PKG_DIR}" "${ARCH}" \
+        "${GOARCH}" "" "" "" "" \
+        "${OLD_VERSION}" "${OLD_PKG_RELEASE}" \
+        "${WORKDIR}/repo/tailscale-${EXPECT_OLD_VERSION}.apk" "${OLD_BUILD_IMAGE_TAG}"; then
+    log_fail "Part B: older-version build_apk_host (compile + package) failed"
+    harness_finish "tests/apk/upgrade-downgrade.sh"
+fi
 if [ ! -s "${WORKDIR}/repo/tailscale-${EXPECT_OLD_VERSION}.apk" ]; then
-    log_fail "Part B: older .apk missing/empty after extraction"
+    log_fail "Part B: older .apk missing/empty after build_apk_host"
     harness_finish "tests/apk/upgrade-downgrade.sh"
 fi
 echo "OK: built tailscale-${EXPECT_OLD_VERSION}.apk (real version delta: ${TEST_VERSION} -> ${OLD_VERSION})"

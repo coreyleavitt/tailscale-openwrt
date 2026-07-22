@@ -131,4 +131,87 @@ assert_eq "PR selection count stays 1 (canary-only) despite 4 arm64/A64 rows exi
 PR_HAS_AARCH64=$("${SELECT_MATRIX}" pull_request "${ARCHES_JSON}" | jq '[.[] | select(.goarch == "arm64")] | length')
 assert_eq "no arm64/A64 row is pulled into the PR leg (canary is mips_24kc, not aarch64)" "0" "${PR_HAS_AARCH64}"
 
+echo
+
+# --- 5. families view (RFC §5.3/S4): `--families` -- one row per family, ----
+# core-gated, carrying the build tuple + that family's gated arch list. This
+# is what build-apk's compile-once-per-family / package-per-arch-in-job
+# restructure matrixes over -- NOT the flat arches list build-ipk still uses.
+
+echo "=== --families: non-PR gives exactly the 4 core families (A64/ASOFT/M32BE/M32LE) ==="
+
+FAMILIES_JSON=$("${SELECT_MATRIX}" workflow_dispatch --families "${ARCHES_JSON}")
+FAMILY_NAMES=$(echo "${FAMILIES_JSON}" | jq -c '[.[].family] | sort')
+assert_eq "workflow_dispatch --families yields exactly A64/ASOFT/M32BE/M32LE" \
+    '["A64","ASOFT","M32BE","M32LE"]' "${FAMILY_NAMES}"
+
+FAMILY_COUNT=$(echo "${FAMILIES_JSON}" | jq 'length')
+assert_eq "workflow_dispatch --families count is 4, not 14" "4" "${FAMILY_COUNT}"
+
+RELEASE_FAMILIES_JSON=$("${SELECT_MATRIX}" release --families "${ARCHES_JSON}")
+assert_eq "release --families matches workflow_dispatch --families" \
+    "$(echo "${FAMILIES_JSON}" | jq -S .)" "$(echo "${RELEASE_FAMILIES_JSON}" | jq -S .)"
+
+echo
+
+echo "=== --families: each family's build tuple matches families.sh --id-for ==="
+
+for fam in A64 ASOFT M32BE M32LE; do
+    ROW=$(echo "${FAMILIES_JSON}" | jq -c --arg f "${fam}" '.[] | select(.family == $f)')
+    GOARCH=$(echo "${ROW}" | jq -r '.goarch')
+    GOARM=$(echo "${ROW}" | jq -r '.goarm')
+    GOMIPS=$(echo "${ROW}" | jq -r '.gomips')
+    GOMIPS64=$(echo "${ROW}" | jq -r '.gomips64')
+    GO386=$(echo "${ROW}" | jq -r '.go386')
+    DERIVED=$(sh "${REPO_ROOT}/scripts/families.sh" --id-for "${GOARCH}" "${GOARM}" "${GOMIPS}" "${GOMIPS64}" "${GO386}")
+    assert_eq "family ${fam}: its own build tuple re-derives to ${fam} via families.sh --id-for" \
+        "${fam}" "${DERIVED}"
+done
+
+echo
+
+echo "=== --families: each family's arch list is gated to tier==core (1 arch each today) ==="
+
+for fam in A64 ASOFT M32BE M32LE; do
+    ARCH_LIST=$(echo "${FAMILIES_JSON}" | jq -c --arg f "${fam}" '.[] | select(.family == $f) | .arches')
+    ARCH_COUNT=$(echo "${ARCH_LIST}" | jq 'length')
+    assert_eq "family ${fam}: exactly 1 gated arch" "1" "${ARCH_COUNT}"
+
+    ARCH_NAME=$(echo "${ARCH_LIST}" | jq -r '.[0]')
+    ARCH_TIER=$(jq -r --arg n "${ARCH_NAME}" '.[] | select(.name == $n) | .tier' "${ARCHES_JSON}")
+    assert_eq "family ${fam}: its listed arch (${ARCH_NAME}) is tier==core" "core" "${ARCH_TIER}"
+done
+
+assert_eq "families view: A64's arch is aarch64_cortex-a53" '["aarch64_cortex-a53"]' \
+    "$(echo "${FAMILIES_JSON}" | jq -c '.[] | select(.family == "A64") | .arches')"
+assert_eq "families view: ASOFT's arch is arm_cortex-a7" '["arm_cortex-a7"]' \
+    "$(echo "${FAMILIES_JSON}" | jq -c '.[] | select(.family == "ASOFT") | .arches')"
+assert_eq "families view: M32BE's arch is mips_24kc" '["mips_24kc"]' \
+    "$(echo "${FAMILIES_JSON}" | jq -c '.[] | select(.family == "M32BE") | .arches')"
+assert_eq "families view: M32LE's arch is mipsel_24kc" '["mipsel_24kc"]' \
+    "$(echo "${FAMILIES_JSON}" | jq -c '.[] | select(.family == "M32LE") | .arches')"
+
+echo
+
+echo "=== --families: pull_request gives exactly the canary's family (M32BE) ==="
+
+PR_FAMILIES_JSON=$("${SELECT_MATRIX}" pull_request --families "${ARCHES_JSON}")
+assert_eq "pull_request --families count is 1" "1" "$(echo "${PR_FAMILIES_JSON}" | jq 'length')"
+assert_eq "pull_request --families is M32BE (mips_24kc's family)" '["M32BE"]' \
+    "$(echo "${PR_FAMILIES_JSON}" | jq -c '[.[].family]')"
+assert_eq "pull_request --families M32BE arch list is exactly the canary arch" '["mips_24kc"]' \
+    "$(echo "${PR_FAMILIES_JSON}" | jq -c '.[0].arches')"
+
+echo
+
+echo "=== --families: order-independence (row-shuffled arches.json yields the same families view) ==="
+
+SHUFFLED_JSON=$(mktemp)
+jq '[.[3], .[1], .[0], .[2]] + .[4:]' "${ARCHES_JSON}" > "${SHUFFLED_JSON}"
+SHUFFLED_FAMILIES=$("${SELECT_MATRIX}" workflow_dispatch --families "${SHUFFLED_JSON}" | jq -S .)
+ORIGINAL_FAMILIES=$(echo "${FAMILIES_JSON}" | jq -S .)
+assert_eq "shuffling arches.json's row order does not change the families view" \
+    "${ORIGINAL_FAMILIES}" "${SHUFFLED_FAMILIES}"
+rm -f "${SHUFFLED_JSON}"
+
 harness_finish "tests/apk/select-matrix.sh"

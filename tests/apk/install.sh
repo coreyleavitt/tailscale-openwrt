@@ -249,32 +249,24 @@ install_verify_one() {
     docker import "${DEST}" "${ROOTFS_IMAGE_TAG}" >/dev/null
     echo "imported ${ROOTFS_IMAGE_TAG}"
 
-    # --- 2. build the real .apk (apk stage; Go layers docker-cached across
-    # arches up to the arch-specific GOARCH step) --------------------------
+    # --- 2. build the real .apk (RFC docs/rfc-apk-arch-coverage.md §5.1/S4:
+    # `docker build --target apk` no longer exists -- compile the family
+    # binary via `--target build` then package host-side via
+    # scripts/package-apk.sh, both wrapped by tests/apk/lib.sh's
+    # build_apk_host. BUILD_IMAGE_TAG is still tagged/available afterward
+    # for the stub-dep repo step below, which needs a live container with
+    # `apk` on PATH -- the `build` stage still COPYs it in.) --------------
     BUILD_START=$(date +%s)
-    echo "Building apk stage (arch=${ARCH}, version=${EXPECT_VERSION})..."
-    if ! docker build \
-        --target apk \
-        --build-arg TAILSCALE_VERSION="${TEST_VERSION}" \
-        --build-arg PKG_RELEASE="${TEST_PKG_RELEASE}" \
-        --build-arg OPENWRT_ARCH="${ARCH}" \
-        --build-arg GOARCH="${ARCH_GOARCH}" \
-        --build-arg GOARM="${ARCH_GOARM}" \
-        --build-arg GOMIPS="${ARCH_GOMIPS}" \
-        --build-arg GOMIPS64="${ARCH_GOMIPS64}" \
-        --build-arg GO386="${ARCH_GO386}" \
-        --build-arg SKIP_UPX=1 \
-        -t "${BUILD_IMAGE_TAG}" -f "${PKG_DIR}/Dockerfile" "${PKG_DIR}"; then
-        log_fail "${ARCH}: docker build --target apk failed"
+    echo "Building family binary + packaging .apk (arch=${ARCH}, version=${EXPECT_VERSION})..."
+    if ! build_apk_host "${PKG_DIR}" "${ARCH}" \
+            "${ARCH_GOARCH}" "${ARCH_GOARM}" "${ARCH_GOMIPS}" "${ARCH_GOMIPS64}" "${ARCH_GO386}" \
+            "${TEST_VERSION}" "${TEST_PKG_RELEASE}" \
+            "${WORKDIR}/tailscale-${ARCH}.apk" "${BUILD_IMAGE_TAG}"; then
+        log_fail "${ARCH}: build_apk_host (compile + package) failed"
         return 0
     fi
-
-    BUILD_CID=$(docker create "${BUILD_IMAGE_TAG}")
-    track "${BUILD_CID}"
-    docker cp "${BUILD_CID}:/out/${ARCH}/tailscale-${EXPECT_VERSION}.apk" "${WORKDIR}/tailscale-${ARCH}.apk"
-    untrack_and_remove "${BUILD_CID}"
     if [ ! -s "${WORKDIR}/tailscale-${ARCH}.apk" ]; then
-        log_fail "${ARCH}: .apk missing/empty after extraction"
+        log_fail "${ARCH}: .apk missing/empty after build_apk_host"
         return 0
     fi
     BUILD_END=$(date +%s)

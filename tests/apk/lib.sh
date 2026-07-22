@@ -144,6 +144,85 @@ extract_apk_tools_binary() {
     chmod +x "${_dest_dir}/apk"
 }
 
+# build_apk_host pkg_dir arch goarch goarm gomips gomips64 go386 version \
+#                pkg_release out_apk build_image_tag [skip_upx]
+#
+# Slice S4 (RFC docs/rfc-apk-arch-coverage.md §5.1/§5.3): the Dockerfile
+# `apk` stage was DELETED this slice -- `docker build --target apk` no
+# longer exists. This is the ONE replacement every test that used to build
+# that stage now calls: compile the family binary
+# (`docker build --target build`, this repo's single compile path) then
+# package host-side via scripts/package-apk.sh (no second docker build),
+# exactly what the `build-apk` CI job's in-job packaging loop does. Kept in
+# lib.sh (not re-derived per test file) so there is exactly one "how do I
+# get an .apk out of this repo" implementation for tests to share -- the
+# same "retire the code it replaces" principle §5.1 applies to
+# package-apk.sh itself.
+#
+# Tags the compiled `build`-stage image as <build_image_tag> (a plain
+# argument, not auto-generated) so callers that ALSO need a live container
+# with `apk` on PATH afterward (e.g. building an offline stub-dep repo via
+# `docker exec ... apk mkpkg`, the A4/A5b/C2 trick) can reuse it directly --
+# the `build` stage still COPYs the pinned host apk-tools binary to
+# /usr/local/bin/apk internally, unchanged by this slice.
+#
+# SOURCE_DATE_EPOCH is read from the compiled image's own
+# /build/tailscale.tar.gz mtime (the same source the old Dockerfile `apk`
+# stage used internally), so the produced .apk stays exactly as
+# deterministic as before this migration.
+#
+# Writes the finished .apk to <out_apk> (parent dir created by
+# package-apk.sh). Prints docker/package-apk.sh output to stderr; returns
+# non-zero on any failure (does not itself log_fail -- callers decide how
+# to report, mirroring extract_apk_tools_binary's convention).
+build_apk_host() {
+    _pkg_dir="$1"; _arch="$2"
+    _goarch="$3"; _goarm="$4"; _gomips="$5"; _gomips64="$6"; _go386="$7"
+    _version="$8"; _pkg_release="$9"
+    shift 9
+    _out_apk="$1"; _build_image_tag="$2"; _skip_upx="${3:-1}"
+
+    _repo_root=$(CDPATH= cd -- "${_pkg_dir}/.." && pwd)
+    _full_version="${_version}-r${_pkg_release}"
+
+    if ! docker build \
+        --target build \
+        --build-arg TAILSCALE_VERSION="${_version}" \
+        --build-arg PKG_RELEASE="${_pkg_release}" \
+        --build-arg OPENWRT_ARCH="${_arch}" \
+        --build-arg GOARCH="${_goarch}" \
+        --build-arg GOARM="${_goarm}" \
+        --build-arg GOMIPS="${_gomips}" \
+        --build-arg GOMIPS64="${_gomips64}" \
+        --build-arg GO386="${_go386}" \
+        --build-arg SKIP_UPX="${_skip_upx}" \
+        -t "${_build_image_tag}" -f "${_pkg_dir}/Dockerfile" "${_pkg_dir}" >&2; then
+        echo "build_apk_host: docker build --target build failed for ${_arch}" >&2
+        return 1
+    fi
+
+    _bin_dir=$(mktemp -d)
+    _bcid=$(docker create "${_build_image_tag}")
+    docker cp "${_bcid}:/build/tailscaled" "${_bin_dir}/tailscaled"
+    _sde=$(docker run --rm --entrypoint stat "${_build_image_tag}" -c %Y /build/tailscale.tar.gz)
+    docker rm -f "${_bcid}" >/dev/null 2>&1 || true
+
+    _apk_tools_dir=$(mktemp -d)
+    extract_apk_tools_binary "${_apk_tools_dir}" "${_pkg_dir}"
+
+    _rc=0
+    SOURCE_DATE_EPOCH="${_sde}" sh "${_repo_root}/scripts/package-apk.sh" \
+        --binary "${_bin_dir}/tailscaled" \
+        --arch "${_arch}" \
+        --version "${_full_version}" \
+        --payload "${_pkg_dir}/src" \
+        --apk-bin "${_apk_tools_dir}/apk" \
+        --out "${_out_apk}" >&2 || _rc=$?
+
+    rm -rf "${_bin_dir}" "${_apk_tools_dir}"
+    return "${_rc}"
+}
+
 # harness_finish script_name -- print the pass/fail summary and exit
 # accordingly. Call as the last line of every tests/apk/*.sh script.
 harness_finish() {

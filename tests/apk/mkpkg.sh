@@ -33,30 +33,18 @@
 # protection is payload-driven, not an ADB metadata field) -- this test
 # asserts it IS present with the right content, not absent.
 #
-# Slice S3 addition -- host-side rebuild + byte-identical (adbdump-level)
-# check: this test ALSO builds the same arch/version through the (still
-# extant, not-yet-deleted -- that's S4) Dockerfile `apk` stage and diffs the
-# two `apk adbdump` outputs, asserting they agree on everything except a
-# short, DOCUMENTED nondeterminism allowlist:
-#   - `hashes:`/`installed-size:` -- checksums/aggregates computed OVER the
-#     varying fields below, so they necessarily differ whenever those do.
-#   - `user:`/`group:` -- apk mkpkg records the FILESYSTEM owner of each
-#     staged file at build time (empirically: NOT normalized to nobody:
-#     nobody as an earlier note in this repo assumed); the Docker build runs
-#     as container root (root:root), the host-side build runs as whatever
-#     user invokes package-apk.sh -- an environment artifact, not a payload
-#     difference.
-#   - `xattrs: ug.archive_bit=...` -- an overlayfs-only extended attribute
-#     Docker's storage driver stamps on files written inside a container
-#     layer; the host-side build (a plain tmpfs/local filesystem) never has
-#     it. Also an environment artifact.
-#   - `mtime:` -- NOT allowlisted: both builds are pinned to the SAME
-#     SOURCE_DATE_EPOCH below (read from the Docker build stage's own
-#     tailscale.tar.gz mtime, the exact value the Dockerfile apk stage
-#     computes internally), so this test proves mtimes match exactly rather
-#     than papering over a real determinism gap.
-# Every other line (paths, sizes, hashes-of-content via the per-file `hash:`
-# under the SAME mtime, info: fields, scripts: bodies) must match verbatim.
+# Slice S3 added a byte-identical (adbdump-level) check of this host-side
+# build against the Dockerfile `apk` stage's own build, proving the two
+# "package the apk" implementations agreed before deleting one of them.
+# Slice S4 (RFC docs/rfc-apk-arch-coverage.md §5.1/S4) DELETED that
+# Dockerfile `apk` stage -- `docker build --target apk` no longer exists
+# anywhere in this repo -- so that comparison is retired along with it
+# (nothing left to compare against; scripts/package-apk.sh is now the ONLY
+# "package the apk" implementation, exactly the point of retiring the
+# duplicate). SOURCE_DATE_EPOCH is still read from the compiled image's own
+# tailscale.tar.gz mtime below, for the same determinism reason S3
+# established -- just no longer to match a second build, only because it's
+# the right value.
 #
 # Uses the shared tests/apk/lib.sh harness (established slice A2);
 # extract_apk_tools_binary (added for slice C3) supplies the host apk-tools
@@ -209,42 +197,13 @@ assert_contains "adbdump: lib/upgrade/keep.d dir present" "${DUMP}" "name: lib/u
 assert_contains "adbdump: keep.d block contains tailscale file" "${KEEPD_BLOCK}" "name: tailscale"
 assert_contains "adbdump: keep.d/tailscale size matches '/etc/tailscale/\\n' (16 bytes)" "${KEEPD_BLOCK}" "size: 16"
 
-# --- 4. byte-identical (adbdump-level) check against the Dockerfile apk --
-# stage, same inputs (RFC §5.1/S3 "Retire the code it replaces" -- until S4
-# deletes the Dockerfile apk stage, this proves the two implementations
-# agree). See the header note for the exact, documented nondeterminism
-# allowlist (hashes:/installed-size:/user:/group:/xattrs:).
-echo "Building the same .apk via the (still extant) Dockerfile apk stage, for comparison..."
-DOCKER_IMAGE_TAG="tailscale-mkpkg-docker-compare:latest"
-if ! docker build \
-    --target apk \
-    --build-arg TAILSCALE_VERSION="${TEST_VERSION}" \
-    --build-arg PKG_RELEASE="${TEST_PKG_RELEASE}" \
-    --build-arg OPENWRT_ARCH="${ARCH}" \
-    --build-arg GOARCH=arm64 \
-    --build-arg SKIP_UPX=1 \
-    -t "${DOCKER_IMAGE_TAG}" -f "${PKG_DIR}/Dockerfile" "${PKG_DIR}"; then
-    log_fail "docker build --target apk (comparison build) failed"
-    harness_finish "tests/apk/mkpkg.sh"
-fi
+# --- 4. Dockerfile `apk` stage comparison -- RETIRED (RFC §5.1/S4) --------
+# S3 proved this host-side build byte-identical (adbdump-level) to the
+# Dockerfile `apk` stage's own build; S4 deleted that stage (`docker build
+# --target apk` no longer exists anywhere in this repo), so there is
+# nothing left to compare against -- scripts/package-apk.sh is now the ONLY
+# "package the apk" implementation, which was the whole point.
 
-DOCKER_APK_PATH_IN_IMAGE="/out/${ARCH}/tailscale-${EXPECT_VERSION}.apk"
-DOCKER_DUMP=$(docker run --rm --entrypoint apk "${DOCKER_IMAGE_TAG}" adbdump "${DOCKER_APK_PATH_IN_IMAGE}" 2>&1) \
-    || log_fail "apk adbdump (docker-built) failed (exit $?): ${DOCKER_DUMP}"
-
-NORMALIZE_PATTERN='user:|group:|hashes:|xattrs:|ug\.archive_bit|installed-size:|^# ADB block'
-HOST_NORM="${WORKDIR}/host-norm.txt"
-DOCKER_NORM="${WORKDIR}/docker-norm.txt"
-printf '%s\n' "${DUMP}" | grep -vE "${NORMALIZE_PATTERN}" > "${HOST_NORM}"
-printf '%s\n' "${DOCKER_DUMP}" | grep -vE "${NORMALIZE_PATTERN}" > "${DOCKER_NORM}"
-
-if DIFF_OUT=$(diff "${DOCKER_NORM}" "${HOST_NORM}" 2>&1); then
-    log_info "OK: host-built .apk adbdump-equivalent to Dockerfile-apk-stage-built .apk (modulo user/group/xattrs/hashes/installed-size)"
-else
-    log_fail "host-built vs Dockerfile-apk-stage-built .apk differ beyond the documented nondeterminism allowlist:
-${DIFF_OUT}"
-fi
-
-docker rmi "${BUILD_IMAGE_TAG}" "${DOCKER_IMAGE_TAG}" >/dev/null 2>&1 || true
+docker rmi "${BUILD_IMAGE_TAG}" >/dev/null 2>&1 || true
 
 harness_finish "tests/apk/mkpkg.sh"

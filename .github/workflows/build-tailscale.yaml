@@ -67,6 +67,7 @@ jobs:
       contents: read
     outputs:
       arches: ${{ steps.select.outputs.arches }}
+      families: ${{ steps.select.outputs.families }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -83,6 +84,15 @@ jobs:
           echo "${arches}" | jq -e 'type == "array" and length > 0' >/dev/null \
             || { echo "::error::select-matrix produced an empty or invalid matrix: '${arches}'"; exit 1; }
           echo "arches=${arches}" >> "$GITHUB_OUTPUT"
+
+          # RFC docs/rfc-apk-arch-coverage.md §5.3/S4: build-apk compiles ONCE
+          # PER FAMILY, then packages that family's (gated) arches in an
+          # in-job shell loop -- never a second per-arch matrix stage. Same
+          # loud "empty/invalid matrix" discipline as the arches output above.
+          families="$(scripts/select-matrix.sh "${{ github.event_name }}" --families)"
+          echo "${families}" | jq -e 'type == "array" and length > 0' >/dev/null \
+            || { echo "::error::select-matrix --families produced an empty or invalid matrix: '${families}'"; exit 1; }
+          echo "families=${families}" >> "$GITHUB_OUTPUT"
 
   # A5a: qemu binfmt registration + foreign-arch exec smoke test. Proves
   # docker/setup-qemu-action's standard registration PLUS the custom
@@ -126,8 +136,11 @@ jobs:
   # matrix as qemu-verify above (release/dispatch = full 4 arches, PR =
   # canary + aarch64 only, per §5's emulation-cost policy). Sibling job, not
   # a step inside qemu-verify -- qemu-verify stays a cheap binfmt/exec smoke
-  # test; this job does the heavier work (a real docker build --target apk
-  # + a real qemu-emulated `apk add` + `tailscaled --version`) via
+  # test; this job does the heavier work (a real compile-family-then-package-
+  # host-side build -- RFC docs/rfc-apk-arch-coverage.md §5.1/S4:
+  # `docker build --target build` + scripts/package-apk.sh, the `apk`
+  # Dockerfile stage this used to build via `--target apk` was deleted -- +
+  # a real qemu-emulated `apk add` + `tailscaled --version`) via
   # tests/apk/install.sh scoped to one arch, mirroring how qemu.sh is
   # invoked per-arch above. Purely additive: does not feed the existing
   # ipk build/release jobs below.
@@ -247,23 +260,35 @@ jobs:
           name: tailscale-${{ matrix.arch.name }}
           path: packages/*
 
-  # C1b (RFC docs/rfc-apk-builds.md §6): a SEPARATE apk build matrix job,
-  # keyed off the same select-matrix/arches.json source as build-ipk above,
-  # but deliberately a DAG SIBLING of build-ipk -- its own
-  # `needs: [select-matrix]`, never needs-chained through build-ipk and
-  # never a step inside it. This is what lets a later slice (C5) make apk
-  # failures non-blocking to the ipk release purely by adjusting
-  # `if:`/`needs:` wiring on top of this job, with no restructuring (§4.6).
-  # Builds the `apk` Dockerfile stage (A2) per arch, mirroring build-ipk's
-  # extraction style (`docker run --rm ... cat file > out`). Output is
-  # arch-namespaced two ways: the in-image path is `/out/<arch>/...` (A2)
-  # and the uploaded artifact is named `apk-<arch>` with a `packages/<arch>/`
-  # path -- never flattened with `merge-multiple`, since all four arches
-  # build an identically-named `tailscale-<version>-r<release>.apk` (RFC
-  # §3/§4.3: arch goes in the path, not the filename, precisely to avoid
-  # that collision). Purely additive: does not feed the existing ipk
-  # build/release jobs, and does not yet implement signing/assembly (C2),
-  # publishing (C3), release attach (C4), or failure isolation (C5).
+  # C1b/S4 (RFC docs/rfc-apk-builds.md §6; RFC docs/rfc-apk-arch-coverage.md
+  # §5.1/§5.3/S4): a SEPARATE apk build job, deliberately a DAG SIBLING of
+  # build-ipk -- its own `needs: [select-matrix]`, never needs-chained
+  # through build-ipk and never a step inside it (unchanged from C1b -- lets
+  # a later slice make apk failures non-blocking to the ipk release purely
+  # by adjusting `if:`/`needs:` wiring, with no restructuring, §4.6).
+  #
+  # S4 restructure (the Dockerfile `apk` stage this job used to build via
+  # `--target apk` was DELETED this slice): the matrix is now over
+  # select-matrix's FAMILIES output, not its flat arches output --
+  # `docker build --target build` compiles ONE static binary per family
+  # (families share a binary; RFC §5.1 "decouple compile from packaging"),
+  # then a plain in-job shell loop packages that family's (gated) arches via
+  # the host-side scripts/package-apk.sh -- no second matrix stage, no
+  # redundant re-fetch of the compiled binary (design F4). Artifact naming
+  # is UNCHANGED from before this restructure: one `apk-<archname>` artifact
+  # per arch, `packages/<arch>/` path -- publish-feed/release-apk-assets'
+  # `built-apks/apk-${arch}` lookups need no changes.
+  #
+  # KNOWN SCOPE LIMIT (see the "Guard" step below): the upload step is a
+  # static YAML step, so it can only emit ONE named artifact per family job
+  # today -- correct because core-gating (kept by this slice; widening to
+  # all 14 families/30 arches is S5a's gate-flip) guarantees exactly one
+  # gated arch per family right now. A family with N>1 gated arches would
+  # need this upload mechanism generalized (a bounded set of conditional
+  # static steps, or a small per-family upload helper) -- deferred to S5a,
+  # which already revisits this wiring when it drops the core-only filter.
+  # The guard step hard-fails loudly rather than silently dropping arches if
+  # that assumption is ever violated before S5a lands.
   build-apk:
     if: github.event.inputs.republish != 'true'
     needs: select-matrix
@@ -274,7 +299,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        arch: ${{ fromJson(needs.select-matrix.outputs.arches) }}
+        family: ${{ fromJson(needs.select-matrix.outputs.families) }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -288,36 +313,98 @@ jobs:
           echo "version=${VERSION:-1.92.2}" >> $GITHUB_OUTPUT
           echo "release=${RELEASE:-1}" >> $GITHUB_OUTPUT
 
-      # RFC docs/rfc-apk-arch-coverage.md §5.1/S2: same explicit five-field
-      # build tuple as the build-ipk job above -- see its comment.
-      - name: Build ${{ matrix.arch.name }} .apk
+      # Docker image/repository names must be lowercase -- family ids
+      # (A64/ASOFT/M32BE/...) are upper/mixed-case mnemonics (RFC §5.2), so
+      # the tag itself must be a lowercased derivative, computed once here
+      # and reused by every later step (`docker build -t <repo>` rejects a
+      # mixed-case name outright).
+      - name: Compute lowercase family tag
+        id: tag
+        run: |
+          echo "family_lc=$(echo '${{ matrix.family.family }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      # Compile ONCE for the whole family (RFC §5.1/S2: explicit five-field
+      # build tuple, same as build-ipk's per-arch build above -- here
+      # sourced from the family row, not a per-arch row). `--target build`:
+      # the `apk` stage this job used to target no longer exists (S4).
+      - name: Build ${{ matrix.family.family }} family binary
         run: |
           cd tailscale-package
           docker build \
-            --target apk \
+            --target build \
             --build-arg TAILSCALE_VERSION=${{ steps.version.outputs.version }} \
             --build-arg PKG_RELEASE=${{ steps.version.outputs.release }} \
-            --build-arg OPENWRT_ARCH=${{ matrix.arch.name }} \
-            --build-arg GOARCH=${{ matrix.arch.goarch }} \
-            --build-arg GOARM=${{ matrix.arch.goarm }} \
-            --build-arg GOMIPS=${{ matrix.arch.gomips }} \
-            --build-arg GOMIPS64=${{ matrix.arch.gomips64 }} \
-            --build-arg GO386=${{ matrix.arch.go386 }} \
-            -t tailscale-apk-${{ matrix.arch.name }}:latest \
+            --build-arg GOARCH=${{ matrix.family.goarch }} \
+            --build-arg GOARM=${{ matrix.family.goarm }} \
+            --build-arg GOMIPS=${{ matrix.family.gomips }} \
+            --build-arg GOMIPS64=${{ matrix.family.gomips64 }} \
+            --build-arg GO386=${{ matrix.family.go386 }} \
+            -t tailscale-family-${{ steps.tag.outputs.family_lc }}:latest \
             -f Dockerfile .
 
-      - name: Extract .apk
+      # Extract the one family binary host-side, plus the SOURCE_DATE_EPOCH
+      # the old Dockerfile apk stage used internally (the source tarball's
+      # mtime) -- so the host-side package step below stays exactly as
+      # deterministic as the deleted stage was.
+      - name: Extract family binary
+        id: extract
         run: |
-          mkdir -p packages/${{ matrix.arch.name }}
-          docker run --rm tailscale-apk-${{ matrix.arch.name }}:latest \
-            cat /out/${{ matrix.arch.name }}/tailscale-${{ steps.version.outputs.version }}-r${{ steps.version.outputs.release }}.apk \
-            > packages/${{ matrix.arch.name }}/tailscale-${{ steps.version.outputs.version }}-r${{ steps.version.outputs.release }}.apk
+          cd tailscale-package
+          mkdir -p "${RUNNER_TEMP}/family-bin"
+          CID=$(docker create tailscale-family-${{ steps.tag.outputs.family_lc }}:latest)
+          docker cp "${CID}:/build/tailscaled" "${RUNNER_TEMP}/family-bin/tailscaled"
+          SDE=$(docker run --rm --entrypoint stat tailscale-family-${{ steps.tag.outputs.family_lc }}:latest -c %Y /build/tailscale.tar.gz)
+          docker rm -f "${CID}" >/dev/null 2>&1 || true
+          echo "sde=${SDE}" >> "$GITHUB_OUTPUT"
+
+      # Same extract_apk_tools_binary helper the publish-feed/republish-feed
+      # jobs use (tests/apk/lib.sh) -- the pinned host apk-tools 3.0.2
+      # binary package-apk.sh needs for --apk-bin, no docker at packaging
+      # time itself.
+      - name: Extract pinned apk-tools binary
+        run: |
+          . tests/apk/lib.sh
+          extract_apk_tools_binary "${RUNNER_TEMP}/apk-bin" tailscale-package
+
+      # Package (host-side, no docker): a plain shell loop over this
+      # family's gated arch list (RFC §5.3 -- "no second matrix stage").
+      # Binary bytes are identical across the family; only .PKGINFO's arch:
+      # (and the output path) differ per iteration.
+      - name: Package each arch in this family
+        env:
+          SOURCE_DATE_EPOCH: ${{ steps.extract.outputs.sde }}
+          FAMILY_ARCHES: ${{ toJson(matrix.family.arches) }}
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.version.outputs.version }}-r${{ steps.version.outputs.release }}"
+          for arch in $(echo "${FAMILY_ARCHES}" | jq -r '.[]'); do
+            mkdir -p "packages/${arch}"
+            scripts/package-apk.sh \
+              --binary "${RUNNER_TEMP}/family-bin/tailscaled" \
+              --arch "${arch}" \
+              --version "${VERSION}" \
+              --payload tailscale-package/src \
+              --apk-bin "${RUNNER_TEMP}/apk-bin/apk" \
+              --out "packages/${arch}/tailscale-${VERSION}-${arch}.apk"
+          done
+
+      # See the job-level "KNOWN SCOPE LIMIT" note above: the upload step
+      # below can only emit one named artifact, so it's wired for exactly
+      # the family's single gated arch -- hard-fail loudly here rather than
+      # silently uploading only arches[0] if that ever stops holding.
+      - name: Guard -- upload step assumes exactly 1 gated arch per family
+        run: |
+          COUNT=$(echo '${{ toJson(matrix.family.arches) }}' | jq 'length')
+          if [ "${COUNT}" -ne 1 ]; then
+            echo "::error::build-apk family ${{ matrix.family.family }} has ${COUNT} gated arches, but the Upload artifact step is only wired for exactly 1 per family (RFC docs/rfc-apk-arch-coverage.md §5.3/S4 -- see the build-apk job-level comment). Generalize the upload step (a bounded set of conditional static steps, or a per-family upload helper) before widening tier==core/canary gating past 1 arch/family."
+            exit 1
+          fi
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: apk-${{ matrix.arch.name }}
-          path: packages/${{ matrix.arch.name }}/*
+          name: apk-${{ matrix.family.arches[0] }}
+          path: packages/${{ matrix.family.arches[0] }}/*
 
       # C5 (RFC §4.6): loud, release-time alert on an apk-path failure --
       # only fires if a PRIOR step in this same matrix leg failed. Never
@@ -334,7 +421,7 @@ jobs:
         env:
           ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
         run: |
-          scripts/notify-alert.sh "apk build FAILED for ${{ matrix.arch.name }} (run ${{ github.run_id }}, ${{ github.repository }})"
+          scripts/notify-alert.sh "apk build FAILED for family ${{ matrix.family.family }} (arches: ${{ join(matrix.family.arches, ', ') }}) (run ${{ github.run_id }}, ${{ github.repository }})"
 
   # C2 (RFC docs/rfc-apk-builds.md §4.2a Design 1, §4.3, §5 "Hermetic C2",
   # §6 slice C2; exact byte layout: docs/rfc-apk-builds.b0-spike.md) -- the

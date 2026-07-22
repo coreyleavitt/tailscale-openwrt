@@ -327,27 +327,28 @@ fi
 docker import "${DEST}" "${ROOTFS_IMAGE_TAG}" >/dev/null
 echo "OK: rootfs sha256 verified + imported ${ROOTFS_IMAGE_TAG}"
 
-echo "Building apk stage (arch=${ARCH}, version=${EXPECT_VERSION})..."
+echo "Building family binary + packaging .apk (arch=${ARCH}, version=${EXPECT_VERSION})..."
 # RFC docs/rfc-apk-arch-coverage.md §5.1/S2: the Dockerfile's `build` stage
 # no longer derives GOARCH from OPENWRT_ARCH's name (hard-fails instead), so
 # it must be passed explicitly.
 ARCH_GOARCH=$(jq -r --arg n "${ARCH}" '.[] | select(.name==$n) | .goarch' "${ARCHES_JSON}")
-docker build \
-    --target apk \
-    --build-arg TAILSCALE_VERSION="${TEST_VERSION}" \
-    --build-arg PKG_RELEASE="${TEST_PKG_RELEASE}" \
-    --build-arg OPENWRT_ARCH="${ARCH}" \
-    --build-arg GOARCH="${ARCH_GOARCH}" \
-    --build-arg SKIP_UPX=1 \
-    -t "${BUILD_IMAGE_TAG}" -f "${PKG_DIR}/Dockerfile" "${PKG_DIR}"
 
-BUILD_CID=$(docker create "${BUILD_IMAGE_TAG}")
-track "${BUILD_CID}"
+# RFC §5.1/S4: `docker build --target apk` no longer exists -- compile the
+# family binary (`--target build`) then package host-side via
+# scripts/package-apk.sh, both wrapped by tests/apk/lib.sh's build_apk_host.
+# BUILD_IMAGE_TAG stays tagged/available afterward for the stub-dep repo
+# step below (needs a live container with `apk` on PATH -- the `build`
+# stage still COPYs it in).
 mkdir -p "${WORKDIR}/repo"
-docker cp "${BUILD_CID}:/out/${ARCH}/tailscale-${EXPECT_VERSION}.apk" "${WORKDIR}/repo/"
-untrack_and_remove "${BUILD_CID}"
+if ! build_apk_host "${PKG_DIR}" "${ARCH}" \
+        "${ARCH_GOARCH}" "" "" "" "" \
+        "${TEST_VERSION}" "${TEST_PKG_RELEASE}" \
+        "${WORKDIR}/repo/tailscale-${EXPECT_VERSION}.apk" "${BUILD_IMAGE_TAG}"; then
+    log_fail "build_apk_host (compile + package) failed"
+    harness_finish "tests/apk/install-dispatch.sh (part 4)"
+fi
 if [ ! -s "${WORKDIR}/repo/tailscale-${EXPECT_VERSION}.apk" ]; then
-    log_fail ".apk missing/empty after extraction"
+    log_fail ".apk missing/empty after build_apk_host"
     harness_finish "tests/apk/install-dispatch.sh (part 4)"
 fi
 echo "OK: built tailscale-${EXPECT_VERSION}.apk"

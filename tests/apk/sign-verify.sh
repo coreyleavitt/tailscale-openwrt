@@ -194,23 +194,23 @@ docker import "${DEST}" "${ROOTFS_IMAGE_TAG}" >/dev/null
 echo "imported ${ROOTFS_IMAGE_TAG}"
 
 # --- 2. build the real aarch64 tailscale .apk -----------------------------
-echo "Building apk stage (arch=${ARCH}, version=${EXPECT_VERSION})..."
-docker build \
-    --target apk \
-    --build-arg TAILSCALE_VERSION="${TEST_VERSION}" \
-    --build-arg PKG_RELEASE="${TEST_PKG_RELEASE}" \
-    --build-arg OPENWRT_ARCH="${ARCH}" \
-    --build-arg GOARCH="${GOARCH}" \
-    --build-arg SKIP_UPX=1 \
-    -t "${BUILD_IMAGE_TAG}" -f "${PKG_DIR}/Dockerfile" "${PKG_DIR}"
-
-BUILD_CID=$(docker create "${BUILD_IMAGE_TAG}")
-track "${BUILD_CID}"
+# RFC docs/rfc-apk-arch-coverage.md §5.1/S4: `docker build --target apk` no
+# longer exists -- compile the family binary (`--target build`) then
+# package host-side via scripts/package-apk.sh, both wrapped by
+# tests/apk/lib.sh's build_apk_host. BUILD_IMAGE_TAG stays tagged/available
+# afterward for the stub-dep repo step below (needs a live container with
+# `apk` on PATH -- the `build` stage still COPYs it in).
+echo "Building family binary + packaging .apk (arch=${ARCH}, version=${EXPECT_VERSION})..."
 mkdir -p "${WORKDIR}/repo"
-docker cp "${BUILD_CID}:/out/${ARCH}/tailscale-${EXPECT_VERSION}.apk" "${WORKDIR}/repo/"
-untrack_and_remove "${BUILD_CID}"
+if ! build_apk_host "${PKG_DIR}" "${ARCH}" \
+        "${GOARCH}" "" "" "" "" \
+        "${TEST_VERSION}" "${TEST_PKG_RELEASE}" \
+        "${WORKDIR}/repo/tailscale-${EXPECT_VERSION}.apk" "${BUILD_IMAGE_TAG}"; then
+    log_fail "build_apk_host (compile + package) failed"
+    harness_finish "tests/apk/sign-verify.sh"
+fi
 if [ ! -s "${WORKDIR}/repo/tailscale-${EXPECT_VERSION}.apk" ]; then
-    log_fail ".apk missing/empty after extraction"
+    log_fail ".apk missing/empty after build_apk_host"
     harness_finish "tests/apk/sign-verify.sh"
 fi
 echo "OK: built tailscale-${EXPECT_VERSION}.apk"
