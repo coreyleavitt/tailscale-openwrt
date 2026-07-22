@@ -70,6 +70,7 @@ CACHE_DIR="${ROOTFS_CACHE_DIR:-${SCRIPT_DIR}/.cache}"
 ARCH="aarch64_cortex-a53"
 
 # shellcheck source=tests/apk/lib.sh
+# (GOARCH lookup deferred until after lib.sh is sourced -- jq is required.)
 . "${SCRIPT_DIR}/lib.sh"
 
 require_cmd jq
@@ -77,6 +78,12 @@ require_cmd docker
 require_cmd openssl
 require_cmd curl
 require_cmd python3
+
+# RFC docs/rfc-apk-arch-coverage.md §5.1/S2: the Dockerfile's `build` stage
+# no longer derives GOARCH from OPENWRT_ARCH's name (hard-fails instead), so
+# every docker build call below must pass it explicitly. ARCH here is
+# always the fixed arm64 core arch, so only GOARCH is non-empty.
+GOARCH=$(jq -r --arg n "${ARCH}" '.[] | select(.name==$n) | .goarch' "${ARCHES_JSON}")
 
 RUN_COEXIST=1
 RUN_DOWNGRADE=1
@@ -193,6 +200,7 @@ docker build \
     --build-arg TAILSCALE_VERSION="${TEST_VERSION}" \
     --build-arg PKG_RELEASE="${TEST_PKG_RELEASE}" \
     --build-arg OPENWRT_ARCH="${ARCH}" \
+    --build-arg GOARCH="${GOARCH}" \
     --build-arg SKIP_UPX=1 \
     -t "${BUILD_IMAGE_TAG}" -f "${PKG_DIR}/Dockerfile" "${PKG_DIR}"
 
@@ -202,6 +210,7 @@ docker build \
     --build-arg TAILSCALE_VERSION="${TEST_VERSION}" \
     --build-arg PKG_RELEASE="${TEST_PKG_RELEASE}" \
     --build-arg OPENWRT_ARCH="${ARCH}" \
+    --build-arg GOARCH="${GOARCH}" \
     --build-arg SKIP_UPX=1 \
     -t "${IPK_IMAGE_TAG}" -f "${PKG_DIR}/Dockerfile" "${PKG_DIR}"
 
@@ -484,6 +493,7 @@ docker build \
     --build-arg TAILSCALE_VERSION="${OLD_VERSION}" \
     --build-arg PKG_RELEASE="${OLD_PKG_RELEASE}" \
     --build-arg OPENWRT_ARCH="${ARCH}" \
+    --build-arg GOARCH="${GOARCH}" \
     --build-arg SKIP_UPX=1 \
     -t "${OLD_BUILD_IMAGE_TAG}" -f "${PKG_DIR}/Dockerfile" "${PKG_DIR}"
 

@@ -5,24 +5,42 @@
 #   TAILSCALE_VERSION - Tailscale version to build (e.g., 1.92.2)
 #   OPENWRT_ARCH      - OpenWrt architecture (mips_24kc or aarch64_cortex-a53)
 #   PKG_RELEASE       - Package release number (default: 1)
+#   GOARCH            - Go architecture (e.g. "arm64", "mips", "amd64");
+#                       REQUIRED, sourced from arches.json's per-arch goarch
+#                       field (RFC docs/rfc-apk-arch-coverage.md §5.1/S2).
+#                       No name-based fallback -- the `build` stage
+#                       hard-fails if this is empty or not a known Go
+#                       GOARCH value.
 #   GOARM             - Go ARM float ABI (e.g. "5" for softfloat, "7" for
-#                       hard-float); should come from arches.json's per-arch
-#                       goarm field, not be guessed from OPENWRT_ARCH's name.
-#   GOMIPS            - Go MIPS float ABI (e.g. "softfloat"); ditto, from
-#                       arches.json's gomips field. Defaults to "softfloat"
-#                       when unset.
+#                       hard-float); from arches.json's per-arch goarm
+#                       field. Only meaningful when GOARCH=arm.
+#   GOMIPS            - Go MIPS float ABI (e.g. "softfloat"|"hardfloat");
+#                       from arches.json's gomips field. REQUIRED (hard-fail)
+#                       when GOARCH is mips/mipsle -- Go's silent default is
+#                       hardfloat, which SIGILLs on softfloat MIPS silicon.
+#   GOMIPS64          - Go MIPS64 float ABI, from arches.json's gomips64
+#                       field. REQUIRED (hard-fail) when GOARCH is
+#                       mips64/mips64le, same reasoning as GOMIPS above.
+#   GO386             - Go 386 float ABI (e.g. "sse2"|"softfloat"), from
+#                       arches.json's go386 field. Only meaningful when
+#                       GOARCH=386.
 
 ARG TAILSCALE_VERSION=1.92.2
 ARG OPENWRT_ARCH=mips_24kc
 ARG PKG_RELEASE=1
 ARG SKIP_UPX=0
 ARG GLINET_VARIANT=0
-# GOARM/GOMIPS: optional overrides, normally sourced from arches.json by
-# build-apk.sh/build.sh's caller and passed as --build-arg. Left empty by
-# default so this stage falls back to its own OPENWRT_ARCH-derived values
-# below for any caller that doesn't pass them explicitly.
+# GOARCH/GOARM/GOMIPS/GOMIPS64/GO386: the explicit build tuple, sourced from
+# arches.json's per-arch fields by the caller (build-apk.sh/build.sh, or the
+# CI workflow's matrix.arch.* fields) and passed as --build-arg. Docker
+# silently IGNORES a --build-arg for an ARG that isn't declared here, so
+# these declarations are load-bearing -- see the `build` stage below, which
+# hard-fails rather than guessing when GOARCH is missing/unrecognized.
+ARG GOARCH=
 ARG GOARM=
 ARG GOMIPS=
+ARG GOMIPS64=
+ARG GO386=
 
 # Host apk-tools 3, pinned to the version OpenWrt 25.12.0 ships (3.0.2), for
 # `apk mkpkg`/`apk mkndx` (A2 packages the .apk with these). O3 (see
@@ -69,8 +87,11 @@ ARG TAILSCALE_VERSION
 ARG OPENWRT_ARCH
 ARG PKG_RELEASE
 ARG SKIP_UPX
+ARG GOARCH
 ARG GOARM
 ARG GOMIPS
+ARG GOMIPS64
+ARG GO386
 
 # Install all build dependencies
 RUN zypper --non-interactive refresh && \
@@ -113,39 +134,50 @@ RUN curl -L "https://github.com/tailscale/tailscale/archive/refs/tags/v${TAILSCA
 
 # Build Tailscale binary with size optimizations
 # GOTOOLCHAIN=auto downloads whatever Go version Tailscale requires
-# GOARCH is always derived from OPENWRT_ARCH's name (arch family never
-# changes). GOARM/GOMIPS are NOT re-derived from the name -- they come
-# straight from the GOARM/GOMIPS build args (sourced from arches.json's
-# per-arch goarm/gomips fields by the caller, e.g. build-apk.sh), since a
-# single OPENWRT_ARCH family can span multiple float ABIs (e.g. the bare,
-# FPU-less `arm_cortex-a7` package arch needs GOARM=5/softfloat, while a
-# hypothetical `cortex-a7_vfpv4` needs GOARM=7/hard-float -- guessing from
-# the name alone previously hardcoded GOARM=7 for every arm_cortex* name
-# and shipped a hard-float binary that SIGILLs on genuinely FPU-less
-# silicon even though `apk add` reports success). GOMIPS defaults to
-# "softfloat" when not passed, since every mips/mipsel arch currently
-# shipped needs it and Go ignores GOMIPS for non-mips GOARCH anyway.
-#   aarch64*     -> arm64
-#   arm_cortex*  -> arm
-#   mipsel*      -> mipsle
-#   mips*        -> mips
+#
+# GOARCH/GOARM/GOMIPS/GOMIPS64/GO386 are explicit build-args (see the ARG
+# declarations above), sourced from arches.json's per-arch build tuple by
+# the caller (build-apk.sh/build.sh, or the CI workflow's matrix.arch.*
+# fields) -- see scripts/families.sh (RFC docs/rfc-apk-arch-coverage.md
+# §5.1/§5.2). There is deliberately NO name-based derivation from
+# OPENWRT_ARCH any more: this stage used to derive GOARCH by a string-`case`
+# on OPENWRT_ARCH with a `*) -> mips` default, which silently mis-built
+# every arch outside aarch64*/arm_cortex*/mipsel* (x86_64, riscv64,
+# loong64, mips64, i386, arm1176jzf-s all fell through to 32-bit MIPS).
+#
+# The validation below hard-fails the build instead of guessing: an empty
+# or unrecognized GOARCH aborts loudly, and a MIPS/MIPS64 GOARCH with its
+# float ABI left unset also aborts loudly -- Go's silent default there is
+# hardfloat, which SIGILLs on softfloat MIPS/MIPS64 silicon (the same class
+# of live bug fixed for arm_cortex-a7, see §9).
 WORKDIR /build/tailscale
-RUN GOARCH=$(case "${OPENWRT_ARCH}" in \
-      aarch64*) echo "arm64" ;; \
-      arm_cortex*) echo "arm" ;; \
-      mipsel*) echo "mipsle" ;; \
-      *) echo "mips" ;; \
-    esac) && \
-    if [ -z "${GOMIPS}" ]; then \
-      GOMIPS="softfloat"; \
-    fi && \
-    echo "Building for GOARCH=${GOARCH} GOARM=${GOARM} GOMIPS=${GOMIPS}" && \
+RUN case "${GOARCH}" in \
+      arm64|arm|mips|mipsle|mips64|mips64le|386|amd64|riscv64|loong64) ;; \
+      *) \
+        echo "ERROR: GOARCH='${GOARCH}' is empty or not a recognized Go GOARCH (expected one of: arm64 arm mips mipsle mips64 mips64le 386 amd64 riscv64 loong64). GOARCH must be passed explicitly via --build-arg, sourced from arches.json's goarch field -- there is no OPENWRT_ARCH name-based fallback." >&2; \
+        exit 1 ;; \
+    esac && \
+    case "${GOARCH}" in \
+      mips|mipsle) \
+        if [ -z "${GOMIPS}" ]; then \
+          echo "ERROR: GOARCH=${GOARCH} requires GOMIPS to be set explicitly (softfloat|hardfloat) -- Go silently defaults to hardfloat, which SIGILLs on softfloat MIPS silicon. Pass --build-arg GOMIPS=, sourced from arches.json's gomips field." >&2; \
+          exit 1; \
+        fi ;; \
+      mips64|mips64le) \
+        if [ -z "${GOMIPS64}" ]; then \
+          echo "ERROR: GOARCH=${GOARCH} requires GOMIPS64 to be set explicitly (softfloat|hardfloat) -- Go silently defaults to hardfloat, which SIGILLs on softfloat MIPS64 silicon. Pass --build-arg GOMIPS64=, sourced from arches.json's gomips64 field." >&2; \
+          exit 1; \
+        fi ;; \
+    esac && \
+    echo "Building for GOARCH=${GOARCH} GOARM=${GOARM} GOMIPS=${GOMIPS} GOMIPS64=${GOMIPS64} GO386=${GO386}" && \
     GOTOOLCHAIN=auto \
     CGO_ENABLED=0 \
     GOOS=linux \
     GOARCH=${GOARCH} \
     GOARM=${GOARM} \
     GOMIPS=${GOMIPS} \
+    GOMIPS64=${GOMIPS64} \
+    GO386=${GO386} \
     go build \
         -trimpath \
         -buildvcs=false \

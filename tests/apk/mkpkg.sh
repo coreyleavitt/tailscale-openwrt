@@ -57,11 +57,16 @@ IMAGE_TAG="tailscale-apk-mkpkg-test:latest"
 APK_PATH_IN_IMAGE="/out/${ARCH}/tailscale-${EXPECT_VERSION}.apk"
 
 echo "Building apk stage (arch=${ARCH}, version=${EXPECT_VERSION})..."
+# RFC docs/rfc-apk-arch-coverage.md §5.1/S2: the Dockerfile's `build` stage
+# no longer derives GOARCH from OPENWRT_ARCH's name (hard-fails instead), so
+# it must be passed explicitly -- aarch64_cortex-a53 is arches.json's arm64
+# core arch.
 if ! docker build \
     --target apk \
     --build-arg TAILSCALE_VERSION="${TEST_VERSION}" \
     --build-arg PKG_RELEASE="${TEST_PKG_RELEASE}" \
     --build-arg OPENWRT_ARCH="${ARCH}" \
+    --build-arg GOARCH=arm64 \
     --build-arg SKIP_UPX=1 \
     -t "${IMAGE_TAG}" -f "${PKG_DIR}/Dockerfile" "${PKG_DIR}"; then
     log_fail "docker build --target apk failed"

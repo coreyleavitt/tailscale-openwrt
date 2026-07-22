@@ -191,10 +191,15 @@ build_and_extract() {
     mkdir -p "${_outdir}/ipk" "${_outdir}/extracted"
 
     echo "--- building (${_label}, arch=${_arch}) ---"
+    # RFC docs/rfc-apk-arch-coverage.md §5.1/S2: the Dockerfile's `build`
+    # stage no longer derives GOARCH from OPENWRT_ARCH's name (hard-fails
+    # instead), so it must be passed explicitly.
+    _goarch=$(jq -r --arg n "${_arch}" '.[] | select(.name==$n) | .goarch // ""' "${ARCHES_JSON}")
     if ! docker build \
         --build-arg TAILSCALE_VERSION="${TEST_VERSION}" \
         --build-arg PKG_RELEASE="${TEST_PKG_RELEASE}" \
         --build-arg OPENWRT_ARCH="${_arch}" \
+        --build-arg GOARCH="${_goarch}" \
         -t "${_tag}" \
         -f "${PKG_DIR}/Dockerfile" "${PKG_DIR}" >"${_outdir}/build.log" 2>&1; then
         tail -n 60 "${_outdir}/build.log" >&2

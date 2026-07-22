@@ -205,6 +205,14 @@ install_verify_one() {
     URL=$(jq -r --arg n "${ARCH}" '.[] | select(.name==$n) | .rootfs_url' "${ARCHES_JSON}")
     PIN=$(jq -r --arg n "${ARCH}" '.[] | select(.name==$n) | .rootfs_sha256' "${ARCHES_JSON}")
     EXPECT_CONTAINER_ARCH=$(jq -r --arg n "${ARCH}" '.[] | select(.name==$n) | .container_arch' "${ARCHES_JSON}")
+    # RFC docs/rfc-apk-arch-coverage.md §5.1/S2: the Dockerfile's `build`
+    # stage no longer derives GOARCH from OPENWRT_ARCH's name (hard-fails
+    # instead), so it must be passed explicitly per-arch.
+    ARCH_GOARCH=$(jq -r --arg n "${ARCH}" '.[] | select(.name==$n) | .goarch // ""' "${ARCHES_JSON}")
+    ARCH_GOARM=$(jq -r --arg n "${ARCH}" '.[] | select(.name==$n) | .goarm // ""' "${ARCHES_JSON}")
+    ARCH_GOMIPS=$(jq -r --arg n "${ARCH}" '.[] | select(.name==$n) | .gomips // ""' "${ARCHES_JSON}")
+    ARCH_GOMIPS64=$(jq -r --arg n "${ARCH}" '.[] | select(.name==$n) | .gomips64 // ""' "${ARCHES_JSON}")
+    ARCH_GO386=$(jq -r --arg n "${ARCH}" '.[] | select(.name==$n) | .go386 // ""' "${ARCHES_JSON}")
 
     echo ""
     echo "############################################"
@@ -250,6 +258,11 @@ install_verify_one() {
         --build-arg TAILSCALE_VERSION="${TEST_VERSION}" \
         --build-arg PKG_RELEASE="${TEST_PKG_RELEASE}" \
         --build-arg OPENWRT_ARCH="${ARCH}" \
+        --build-arg GOARCH="${ARCH_GOARCH}" \
+        --build-arg GOARM="${ARCH_GOARM}" \
+        --build-arg GOMIPS="${ARCH_GOMIPS}" \
+        --build-arg GOMIPS64="${ARCH_GOMIPS64}" \
+        --build-arg GO386="${ARCH_GO386}" \
         --build-arg SKIP_UPX=1 \
         -t "${BUILD_IMAGE_TAG}" -f "${PKG_DIR}/Dockerfile" "${PKG_DIR}"; then
         log_fail "${ARCH}: docker build --target apk failed"

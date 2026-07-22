@@ -328,11 +328,16 @@ docker import "${DEST}" "${ROOTFS_IMAGE_TAG}" >/dev/null
 echo "OK: rootfs sha256 verified + imported ${ROOTFS_IMAGE_TAG}"
 
 echo "Building apk stage (arch=${ARCH}, version=${EXPECT_VERSION})..."
+# RFC docs/rfc-apk-arch-coverage.md §5.1/S2: the Dockerfile's `build` stage
+# no longer derives GOARCH from OPENWRT_ARCH's name (hard-fails instead), so
+# it must be passed explicitly.
+ARCH_GOARCH=$(jq -r --arg n "${ARCH}" '.[] | select(.name==$n) | .goarch' "${ARCHES_JSON}")
 docker build \
     --target apk \
     --build-arg TAILSCALE_VERSION="${TEST_VERSION}" \
     --build-arg PKG_RELEASE="${TEST_PKG_RELEASE}" \
     --build-arg OPENWRT_ARCH="${ARCH}" \
+    --build-arg GOARCH="${ARCH_GOARCH}" \
     --build-arg SKIP_UPX=1 \
     -t "${BUILD_IMAGE_TAG}" -f "${PKG_DIR}/Dockerfile" "${PKG_DIR}"
 

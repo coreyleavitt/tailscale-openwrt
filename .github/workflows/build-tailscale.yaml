@@ -205,6 +205,11 @@ jobs:
           echo "version=${VERSION:-1.92.2}" >> $GITHUB_OUTPUT
           echo "release=${RELEASE:-1}" >> $GITHUB_OUTPUT
 
+      # RFC docs/rfc-apk-arch-coverage.md §5.1/S2: the Dockerfile no longer
+      # derives GOARCH from OPENWRT_ARCH's name (it hard-fails instead), so
+      # all five build-tuple fields must be passed explicitly here, sourced
+      # from select-matrix.sh's full-row matrix.arch.* output (same source
+      # arches.json feeds build-apk.sh/build.sh from).
       - name: Build ${{ matrix.arch.name }} package
         run: |
           cd tailscale-package
@@ -212,8 +217,11 @@ jobs:
             --build-arg TAILSCALE_VERSION=${{ steps.version.outputs.version }} \
             --build-arg PKG_RELEASE=${{ steps.version.outputs.release }} \
             --build-arg OPENWRT_ARCH=${{ matrix.arch.name }} \
+            --build-arg GOARCH=${{ matrix.arch.goarch }} \
             --build-arg GOARM=${{ matrix.arch.goarm }} \
             --build-arg GOMIPS=${{ matrix.arch.gomips }} \
+            --build-arg GOMIPS64=${{ matrix.arch.gomips64 }} \
+            --build-arg GO386=${{ matrix.arch.go386 }} \
             -t tailscale-${{ matrix.arch.name }}:latest \
             -f Dockerfile .
 
@@ -274,6 +282,8 @@ jobs:
           echo "version=${VERSION:-1.92.2}" >> $GITHUB_OUTPUT
           echo "release=${RELEASE:-1}" >> $GITHUB_OUTPUT
 
+      # RFC docs/rfc-apk-arch-coverage.md §5.1/S2: same explicit five-field
+      # build tuple as the build-ipk job above -- see its comment.
       - name: Build ${{ matrix.arch.name }} .apk
         run: |
           cd tailscale-package
@@ -282,8 +292,11 @@ jobs:
             --build-arg TAILSCALE_VERSION=${{ steps.version.outputs.version }} \
             --build-arg PKG_RELEASE=${{ steps.version.outputs.release }} \
             --build-arg OPENWRT_ARCH=${{ matrix.arch.name }} \
+            --build-arg GOARCH=${{ matrix.arch.goarch }} \
             --build-arg GOARM=${{ matrix.arch.goarm }} \
             --build-arg GOMIPS=${{ matrix.arch.gomips }} \
+            --build-arg GOMIPS64=${{ matrix.arch.gomips64 }} \
+            --build-arg GO386=${{ matrix.arch.go386 }} \
             -t tailscale-apk-${{ matrix.arch.name }}:latest \
             -f Dockerfile .
 

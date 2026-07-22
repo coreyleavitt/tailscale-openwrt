@@ -11,12 +11,18 @@
 # looping the existing single-arch build over every arches.json entry. Each
 # arch's output stays namespaced under packages/<arch>/ as before.
 #
-# GOARM/GOMIPS are explicitly looked up per-arch from arches.json below and
-# passed to the Dockerfile as --build-arg (rather than left for the
-# Dockerfile to guess from the OPENWRT_ARCH name) -- see build_one. This was
-# fixed after a latent bug: the Dockerfile used to hardcode GOARM=7 for any
-# `arm_cortex*` name, which is wrong for the bare, FPU-less `arm_cortex-a7`
-# package arch (needs GOARM=5/softfloat) and would SIGILL on real hardware.
+# GOARCH/GOARM/GOMIPS/GOMIPS64/GO386 are explicitly looked up per-arch from
+# arches.json below and passed to the Dockerfile as --build-arg (rather than
+# left for the Dockerfile to guess from the OPENWRT_ARCH name) -- see
+# build_one. This was fixed after two latent bugs: (1) the Dockerfile used
+# to hardcode GOARM=7 for any `arm_cortex*` name, which is wrong for the
+# bare, FPU-less `arm_cortex-a7` package arch (needs GOARM=5/softfloat) and
+# would SIGILL on real hardware; (2) the Dockerfile derived GOARCH itself by
+# a string-`case` on OPENWRT_ARCH with a `*) -> mips` default (RFC
+# docs/rfc-apk-arch-coverage.md §5.1/S2), silently mis-building every arch
+# outside aarch64*/arm_cortex*/mipsel* as 32-bit MIPS. All five build-tuple
+# fields now come straight from arches.json; the Dockerfile hard-fails
+# rather than guessing if GOARCH is missing or unrecognized.
 #
 # Usage:
 #   build-apk.sh [version] [pkg_release] [arch]
@@ -56,18 +62,22 @@ fi
 build_one() {
     _arch="$1"
 
-    # Look up this arch's goarm/gomips from arches.json and pass them through
-    # explicitly as --build-arg -- the Dockerfile's `build` stage honors these
-    # (falling back to its old derive-from-OPENWRT_ARCH logic only when they
-    # are unset/empty), so arches.json is the single source of truth for the
-    # Go cross-compile flags rather than the Dockerfile re-deriving them from
-    # the arch string. (Root cause of the arm_cortex-a7 GOARM=7/hard-float
-    # SIGILL bug: the Dockerfile used to hardcode GOARM=7 for any
-    # `arm_cortex*` name, ignoring arches.json's goarm field entirely.)
+    # Look up this arch's full build tuple from arches.json and pass every
+    # field through explicitly as --build-arg -- arches.json is the single
+    # source of truth for the Go cross-compile flags; the Dockerfile no
+    # longer re-derives any of them from the OPENWRT_ARCH string (RFC
+    # docs/rfc-apk-arch-coverage.md §5.1/S2 -- it hard-fails instead of
+    # guessing if goarch is missing/unrecognized). (Root cause of the
+    # arm_cortex-a7 GOARM=7/hard-float SIGILL bug: the Dockerfile used to
+    # hardcode GOARM=7 for any `arm_cortex*` name, ignoring arches.json's
+    # goarm field entirely.)
+    _goarch=$(jq -r --arg name "${_arch}" '.[] | select(.name == $name) | .goarch // ""' "${ARCHES_JSON}")
     _goarm=$(jq -r --arg name "${_arch}" '.[] | select(.name == $name) | .goarm // ""' "${ARCHES_JSON}")
     _gomips=$(jq -r --arg name "${_arch}" '.[] | select(.name == $name) | .gomips // ""' "${ARCHES_JSON}")
+    _gomips64=$(jq -r --arg name "${_arch}" '.[] | select(.name == $name) | .gomips64 // ""' "${ARCHES_JSON}")
+    _go386=$(jq -r --arg name "${_arch}" '.[] | select(.name == $name) | .go386 // ""' "${ARCHES_JSON}")
 
-    echo "Building Tailscale .apk ${APK_VERSION} for ${_arch} (GOARM=${_goarm:-none} GOMIPS=${_gomips:-none})..."
+    echo "Building Tailscale .apk ${APK_VERSION} for ${_arch} (GOARCH=${_goarch:-none} GOARM=${_goarm:-none} GOMIPS=${_gomips:-none} GOMIPS64=${_gomips64:-none} GO386=${_go386:-none})..."
     mkdir -p "packages/${_arch}"
 
     docker build \
@@ -76,8 +86,11 @@ build_one() {
         --build-arg TAILSCALE_VERSION=${VERSION} \
         --build-arg PKG_RELEASE=${PKG_RELEASE} \
         --build-arg OPENWRT_ARCH=${_arch} \
+        --build-arg GOARCH=${_goarch} \
         --build-arg GOARM=${_goarm} \
         --build-arg GOMIPS=${_gomips} \
+        --build-arg GOMIPS64=${_gomips64} \
+        --build-arg GO386=${_go386} \
         -t tailscale-apk-${_arch}:v${VERSION} \
         -f Dockerfile \
         . || { echo "Error: Failed to build ${_arch} .apk"; exit 1; }

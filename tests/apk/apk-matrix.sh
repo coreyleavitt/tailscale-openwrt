@@ -320,6 +320,7 @@ docker rmi "tailscale-apk-${TEST_ARCH}:v${TEST_VERSION}" >/dev/null 2>&1 || true
 echo
 echo "=== empirical: arm_cortex-a7 go build receives GOARM=5 (build stage only) ==="
 
+ARM7_GOARCH=$(jq -r '.[] | select(.name == "arm_cortex-a7") | .goarch' "${ARCHES_JSON}")
 ARM7_GOARM=$(jq -r '.[] | select(.name == "arm_cortex-a7") | .goarm' "${ARCHES_JSON}")
 ARM7_LOG="${WORKDIR}/arm7-build.log"
 
@@ -331,6 +332,7 @@ ARM7_LOG="${WORKDIR}/arm7-build.log"
         --build-arg TAILSCALE_VERSION="${TEST_VERSION}" \
         --build-arg PKG_RELEASE="${TEST_PKG_RELEASE}" \
         --build-arg OPENWRT_ARCH=arm_cortex-a7 \
+        --build-arg GOARCH="${ARM7_GOARCH}" \
         --build-arg GOARM="${ARM7_GOARM}" \
         --build-arg SKIP_UPX=1 \
         -t tailscale-build-smoke-arm_cortex-a7:test \

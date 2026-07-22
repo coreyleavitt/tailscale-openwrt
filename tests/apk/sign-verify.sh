@@ -100,6 +100,11 @@ require_cmd curl
 require_cmd python3
 require_cmd base64
 
+# RFC docs/rfc-apk-arch-coverage.md §5.1/S2: the Dockerfile's `build` stage
+# no longer derives GOARCH from OPENWRT_ARCH's name (hard-fails instead), so
+# the docker build call below must pass it explicitly.
+GOARCH=$(jq -r --arg n "${ARCH}" '.[] | select(.name==$n) | .goarch' "${ARCHES_JSON}")
+
 TEST_VERSION="${SIGN_VERIFY_TEST_VERSION:-1.92.2}"
 TEST_PKG_RELEASE="${SIGN_VERIFY_TEST_PKG_RELEASE:-1}"
 EXPECT_VERSION="${TEST_VERSION}-r${TEST_PKG_RELEASE}"
@@ -195,6 +200,7 @@ docker build \
     --build-arg TAILSCALE_VERSION="${TEST_VERSION}" \
     --build-arg PKG_RELEASE="${TEST_PKG_RELEASE}" \
     --build-arg OPENWRT_ARCH="${ARCH}" \
+    --build-arg GOARCH="${GOARCH}" \
     --build-arg SKIP_UPX=1 \
     -t "${BUILD_IMAGE_TAG}" -f "${PKG_DIR}/Dockerfile" "${PKG_DIR}"
 
