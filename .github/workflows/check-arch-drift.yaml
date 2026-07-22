@@ -1,0 +1,134 @@
+name: Check Arch Drift vs OpenWrt Packages Index
+
+# Weekly, warn-only arch-set drift check (RFC docs/rfc-apk-arch-coverage.md
+# §5.7, slice S9 -- the final slice of that RFC). `arches.json` is the single
+# source of truth for which OpenWrt package arches this feed publishes (35
+# rows: 30 feasible + 5 deliberately-tracked infeasible). Nothing else keeps
+# that table honest against upstream -- if OpenWrt adds a new target arch or
+# drops one, arches.json just silently rots. This mirrors the existing daily
+# check-releases.yaml version-drift cron, but for the ARCH SET rather than
+# package version currency.
+#
+# A SEPARATE workflow file, not a day-gated job wedged into
+# check-releases.yaml: that workflow already carries five distinct concerns
+# (build-trigger check, apk self-heal, synthetic feed probe, keepalive) at a
+# DAILY cadence built around one release tag; arch-set drift is a WEEKLY,
+# release-tag-independent check (a single static-index fetch + a jq set
+# diff against arches.json, no build/publish/release context needed at all).
+# Bolting a `if: github.event.schedule == '...' && day-of-week == 1` guard
+# onto an already-dense job would tangle two independent concerns behind one
+# conditional for no shared benefit -- a dedicated file lets each workflow's
+# job graph stay legible and lets GitHub's own cron scheduler handle the
+# weekly cadence natively instead of a hand-rolled day guard.
+#
+# WARN-ONLY, deliberately (RFC §5.7: "warning (not failing) on
+# additions/removals"). This job NEVER fails on drift and NEVER auto-edits
+# arches.json or fires a republish -- unlike detect-apk-drift.sh's version
+# self-heal, an arch appearing/disappearing upstream is a human decision.
+# A removal specifically is a decommission SIGNAL, not an action: see the
+# Arch Decommission Runbook (docs/MAINTAINING.md#arch-decommission-runbook)
+# for the deliberate, reviewed `--allow-depublish` step that retiring a
+# tracked arch actually requires.
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'  # Weekly, Monday 6 AM UTC (same time-of-day as check-releases.yaml's daily cron)
+  workflow_dispatch:
+
+permissions:
+  contents: write  # read the repo + self-commit the keepalive state file below; nothing else (no build/publish/release access needed -- this job only reads a live index and reports)
+
+jobs:
+  check-arch-drift:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Detect arch drift vs the live OpenWrt packages index
+        id: drift
+        run: |
+          set +e
+          sh scripts/detect-arch-drift.sh "https://downloads.openwrt.org/releases/25.12.0/packages/" arches.json >"${RUNNER_TEMP}/arch-drift-result.log" 2>&1
+          RC=$?
+          set -e
+          cat "${RUNNER_TEMP}/arch-drift-result.log"
+          if [ "${RC}" -eq 0 ]; then
+            echo "status=clean" >> "$GITHUB_OUTPUT"
+          elif [ "${RC}" -eq 1 ]; then
+            echo "status=drift" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=harderror" >> "$GITHUB_OUTPUT"
+          fi
+          # Always exit 0 -- warn-only per RFC §5.7, this step (and the job)
+          # must never fail on a drift or hard-error signal, only on this
+          # step's own tooling breaking (curl/jq missing, script deleted).
+          exit 0
+
+      - name: Log clean result
+        if: steps.drift.outputs.status == 'clean'
+        run: |
+          echo "arch-drift: OK -- live OpenWrt arch index matches arches.json, no action needed"
+
+      - name: Warn + alert on arch drift
+        if: steps.drift.outputs.status == 'drift'
+        env:
+          ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
+        run: |
+          echo "::warning::arches.json has drifted from the live OpenWrt packages index -- see the job log for additions/removals. This is advisory only (RFC §5.7, warn-only); no build, publish, or arches.json change was made. If arches were REMOVED upstream, see the Arch Decommission Runbook (docs/MAINTAINING.md#arch-decommission-runbook) before retiring the corresponding arches.json row(s)."
+          cat "${RUNNER_TEMP}/arch-drift-result.log" | scripts/notify-alert.sh "arch-drift: arches.json has drifted from the live OpenWrt packages index (warn-only, see docs/MAINTAINING.md#arch-decommission-runbook for removals)"
+
+      - name: Warn + alert on undetermined drift (hard error)
+        if: steps.drift.outputs.status == 'harderror'
+        env:
+          ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
+        run: |
+          echo "::warning::arch-drift check could not determine drift status (hard fetch/parse error against the live OpenWrt packages index) -- transient network/DNS issue or an unexpected index format. NOT treated as 'in sync' or 'drift'; investigate manually if this repeats."
+          cat "${RUNNER_TEMP}/arch-drift-result.log" | scripts/notify-alert.sh "arch-drift: could not determine drift status against the live OpenWrt packages index (hard error, not auto-resolved)"
+
+      # Keepalive (same discipline as check-releases.yaml's own "Record
+      # check state" step): GitHub auto-disables a repo's scheduled
+      # workflows after 60 days of no repository activity. check-releases.yaml
+      # already guarantees a push at least every 14 days via its own daily
+      # cron, so this is a defensive second layer (this workflow's own
+      # record of its last run), not the sole safeguard -- self-commits a
+      # small state file so this workflow's activity is visible in history
+      # too, with the same "meaningful commit when the result changes,
+      # heartbeat if otherwise idle" shape.
+      - name: Record check state (keepalive)
+        run: |
+          mkdir -p state
+          cat > state/last-arch-check.json <<EOF
+          {
+            "checked_utc": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "status": "${{ steps.drift.outputs.status }}"
+          }
+          EOF
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add state/last-arch-check.json
+
+          AGE_DAYS=$(( ( $(date -u +%s) - $(git log -1 --format=%ct) ) / 86400 ))
+          if git diff --cached --quiet; then
+            if [ "$AGE_DAYS" -lt 14 ]; then
+              echo "State unchanged, repo active ${AGE_DAYS}d ago; nothing to do."
+              exit 0
+            fi
+            echo "State unchanged but repo idle ${AGE_DAYS}d; pushing heartbeat."
+            git commit --allow-empty \
+              -m "chore(arch-drift): keepalive heartbeat (idle ${AGE_DAYS}d)"
+          else
+            git commit \
+              -m "chore(arch-drift): weekly check (${{ steps.drift.outputs.status }})"
+          fi
+
+          for attempt in 1 2 3; do
+            if git pull --rebase origin "${GITHUB_REF_NAME}" && git push; then
+              exit 0
+            fi
+            echo "Push attempt ${attempt} failed; retrying."
+            sleep $(( attempt * 3 ))
+          done
+          echo "ERROR: failed to push state after 3 attempts" >&2
+          exit 1

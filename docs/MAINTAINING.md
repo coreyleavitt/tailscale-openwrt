@@ -78,8 +78,13 @@ matrix's gate is independent of everything below.
    before merging -- `tests/apk/docs-arch-coverage.sh` fails the build if it
    drifts from `arches.json`.
 
-The weekly arch-drift check (RFC §5.7 slice S9, not yet implemented) will
-cross-reference this runbook when it lands.
+The weekly arch-drift check (RFC §5.7 slice S9) cross-references this
+runbook: `.github/workflows/check-arch-drift.yaml` runs
+`scripts/detect-arch-drift.sh` against the live OpenWrt packages index every
+Monday and, on a REMOVAL (an arches.json name no longer present upstream),
+its warning output points here. It is warn-only -- it never edits
+`arches.json` or fires a publish itself; retiring an arch is still this
+runbook's deliberate, reviewed step.
 
 ## SBOM Per Family
 
