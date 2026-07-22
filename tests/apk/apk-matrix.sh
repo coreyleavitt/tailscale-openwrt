@@ -25,8 +25,8 @@
 # test below; this file is purely about workflow DAG/wiring shape):
 #
 #   (a) `build-apk` is a matrix job driven by
-#       needs.select-matrix.outputs.families (NOT .arches -- that's
-#       build-ipk's source now, deliberately decoupled).
+#       needs.select-matrix.outputs.compile_families (NOT .ipk_arches --
+#       that's build-ipk's source now, deliberately decoupled; S5a rename).
 #   (b) sibling, not nested: `build-apk` does not appear in `build-ipk`'s
 #       `needs` and vice versa; both are independent top-level entries in
 #       `jobs:` (never a step-list entry inside the other).
@@ -112,16 +112,17 @@ ipk_needs = needs_list(ipk_job)
 result["apk_needs"] = sorted(apk_needs)
 result["ipk_needs"] = sorted(ipk_needs)
 
-# (a) S4 restructure: build-apk matrixes over select-matrix's FAMILIES
-# output (compile once per family), NOT its flat arches output (that's
-# build-ipk's source, unchanged) -- RFC docs/rfc-apk-arch-coverage.md
-# §5.1/§5.3/S4.
+# (a) S4/S5a restructure: build-apk matrixes over select-matrix's
+# compile_families output (compile once per family), NOT its flat arches
+# output (that's build-ipk's ipk_arches source, unchanged) -- RFC
+# docs/rfc-apk-arch-coverage.md §5.1/§5.3/S4, renamed to the compile_families
+# multi-output name by S5a's §5.8 gate-flip.
 apk_strategy = apk_job.get("strategy", {}) or {}
 apk_matrix = apk_strategy.get("matrix", {}) or {}
 apk_family_expr = str(apk_matrix.get("family", ""))
 result["apk_matrix_family_expr"] = apk_family_expr
 result["apk_matrix_from_select_matrix_families"] = (
-    "needs.select-matrix.outputs.families" in apk_family_expr
+    "needs.select-matrix.outputs.compile_families" in apk_family_expr
 )
 result["apk_matrix_has_no_arch_key"] = "arch" not in apk_matrix
 
@@ -138,14 +139,14 @@ ipk_steps_text = json.dumps(ipk_job.get("steps", []))
 result["build_apk_is_step_in_ipk"] = "build-apk" in ipk_steps_text
 result["build_ipk_is_step_in_apk"] = "build-ipk" in apk_steps_text
 
-# (c) arch-namespaced artifact upload: find upload-artifact steps in
-# build-apk, check `name:` and `path:` are both keyed by an arch name (S4:
-# matrix.family.arches[0] -- see the build-apk job-level "KNOWN SCOPE
-# LIMIT" comment; a family job's upload step is wired for exactly the
-# family's one gated arch, guarded by a preceding step that hard-fails if a
-# family ever carries more than one), and confirm the workflow nowhere
-# downloads apk-namespaced artifacts with merge-multiple: true (that would
-# flatten distinct arches' identically-named .apk files into one dir and
+# (c) S5a GENERALIZED upload: build-apk uploads ONE artifact PER FAMILY
+# (name keyed by the family tag, e.g. apk-family-a64), `path:` covering the
+# WHOLE packages/ tree (every gated arch's own subdir) -- not a single-arch
+# `matrix.family.arches[0]` glob any more, since the S5a gate-flip means a
+# family can carry many gated arches at once (e.g. A64 has 4). Also confirm
+# the old `arches[0]` single-arch assumption is GONE, and that the workflow
+# nowhere downloads apk-namespaced artifacts with merge-multiple: true
+# (that would flatten distinct families' per-arch subdirs together and
 # collide -- RFC §3/§4.3).
 upload_steps = [
     s for s in apk_job.get("steps", []) or []
@@ -158,22 +159,22 @@ result["apk_upload_names"] = [
 result["apk_upload_paths"] = [
     str((s.get("with", {}) or {}).get("path", "")) for s in upload_steps
 ]
-result["apk_upload_name_arch_namespaced"] = all(
-    "matrix.family.arches[0]" in n for n in result["apk_upload_names"]
+result["apk_upload_name_family_namespaced"] = all(
+    "family_lc" in n or "family.family" in n for n in result["apk_upload_names"]
 ) and len(upload_steps) > 0
-result["apk_upload_path_arch_namespaced"] = all(
-    "matrix.family.arches[0]" in p for p in result["apk_upload_paths"]
+result["apk_upload_path_is_whole_packages_tree"] = all(
+    p.strip() in ("packages/*", "packages/") for p in result["apk_upload_paths"]
 ) and len(upload_steps) > 0
 
-# S4 guard: a preceding step must hard-fail the job if a family ever
-# carries more than the 1 gated arch this upload wiring assumes (rather
-# than silently uploading only arches[0] and dropping the rest).
+# S5a: the old single-arch `arches[0]` assumption must be GONE from every
+# part of build-apk (upload name, upload path, and the now-deleted guard
+# step) -- a family carrying >1 gated arch no longer needs a hard-fail
+# escape hatch because nothing here assumes exactly 1 any more.
 apk_run_texts = " ".join(
     str(s.get("run", "")) for s in apk_job.get("steps", []) or []
 )
-result["apk_has_single_arch_upload_guard"] = (
-    "arches" in apk_run_texts and "jq 'length'" in apk_run_texts
-)
+apk_job_text = json.dumps(apk_job)
+result["apk_has_no_single_arch_zero_index_assumption"] = "arches[0]" not in apk_job_text
 
 # Guard: no download-artifact step anywhere in the workflow merge-multiples
 # an apk-* artifact pattern into a flat dir.
@@ -207,7 +208,7 @@ assert_eq "workflow YAML parses" "true" "$(echo "${STRUCT_JSON}" | jq -r '.yaml_
 assert_eq "build-ipk job present (untouched by this slice)" "true" "$(echo "${STRUCT_JSON}" | jq -r '.has_build_ipk')"
 assert_eq "build-apk job present" "true" "$(echo "${STRUCT_JSON}" | jq -r '.has_build_apk')"
 
-assert_eq "build-apk matrix driven by needs.select-matrix.outputs.families (S4)" "true" \
+assert_eq "build-apk matrix driven by needs.select-matrix.outputs.compile_families (S4/S5a)" "true" \
     "$(echo "${STRUCT_JSON}" | jq -r '.apk_matrix_from_select_matrix_families')"
 assert_eq "build-apk matrix has no arch key (compiles per family, not per arch)" "true" \
     "$(echo "${STRUCT_JSON}" | jq -r '.apk_matrix_has_no_arch_key')"
@@ -226,12 +227,12 @@ assert_eq "build-ipk is not a step inside build-apk" "false" \
 
 assert_eq "build-apk uploads at least one artifact" "true" \
     "$([ "$(echo "${STRUCT_JSON}" | jq -r '.apk_upload_step_count')" -gt 0 ] && echo true || echo false)"
-assert_eq "apk artifact name is arch-namespaced (matrix.family.arches[0])" "true" \
-    "$(echo "${STRUCT_JSON}" | jq -r '.apk_upload_name_arch_namespaced')"
-assert_eq "apk artifact path is arch-namespaced (matrix.family.arches[0])" "true" \
-    "$(echo "${STRUCT_JSON}" | jq -r '.apk_upload_path_arch_namespaced')"
-assert_eq "build-apk hard-fails if a family ever has >1 gated arch (upload wiring guard)" "true" \
-    "$(echo "${STRUCT_JSON}" | jq -r '.apk_has_single_arch_upload_guard')"
+assert_eq "apk artifact name is family-namespaced (S5a: one artifact per family, not per arch)" "true" \
+    "$(echo "${STRUCT_JSON}" | jq -r '.apk_upload_name_family_namespaced')"
+assert_eq "apk artifact path uploads the WHOLE packages/ tree (every gated arch's subdir)" "true" \
+    "$(echo "${STRUCT_JSON}" | jq -r '.apk_upload_path_is_whole_packages_tree')"
+assert_eq "S5a: no single-arch arches[0] assumption remains anywhere in build-apk" "true" \
+    "$(echo "${STRUCT_JSON}" | jq -r '.apk_has_no_single_arch_zero_index_assumption')"
 assert_eq "no merge-multiple flatten of apk-* artifacts anywhere in workflow" "false" \
     "$(echo "${STRUCT_JSON}" | jq -r '.apk_flat_merge_present')"
 
@@ -250,16 +251,67 @@ assert_eq "build-apk's packaging step calls scripts/package-apk.sh (host-side)" 
 
 echo
 
-# --- build-apk matrix source is DECOUPLED from build-ipk's (S4) ---------
+# --- S5a: no single-arch `[0]` assumption anywhere in the workflow, and ----
+# the download/find logic in publish-feed/release-apk-assets resolves a
+# given arch's .apk by searching the extracted artifact tree for a
+# `<arch>/*.apk` path segment (works regardless of how many arches share a
+# family's one uploaded artifact) rather than an `apk-<arch>`-named artifact.
+
+echo "=== S5a: no single-arch [0] assumption remains; downloaders resolve per-arch by path ==="
+
+WHOLE_WORKFLOW_TEXT=$(cat "${WORKFLOW}")
+assert_not_contains "no 'arches[0]' index assumption anywhere in the workflow" \
+    "${WHOLE_WORKFLOW_TEXT}" "arches[0]"
+assert_not_contains "no old single-arch 'apk-\${arch}' artifact-dir lookup remains" \
+    "${WHOLE_WORKFLOW_TEXT}" 'apk-${arch}'
+
+PUBLISH_FEED_JOB_JSON=$(python3 - "${WORKFLOW}" <<'PYEOF'
+import sys, json, yaml
+with open(sys.argv[1]) as f:
+    doc = yaml.safe_load(f)
+jobs = doc.get("jobs", {}) or {}
+result = {}
+
+pf_job = jobs.get("publish-feed", {}) or {}
+pf_run_text = " ".join(str(s.get("run", "")) for s in pf_job.get("steps", []) or [])
+result["publish_feed_calls_publish_feed_sh"] = "publish-feed.sh" in pf_run_text
+
+raa_job = jobs.get("release-apk-assets", {}) or {}
+raa_run_text = " ".join(str(s.get("run", "")) for s in raa_job.get("steps", []) or [])
+result["release_apk_assets_uses_path_segment_find"] = (
+    "find built-apks" in raa_run_text and '*/${arch}/*.apk' in raa_run_text
+)
+print(json.dumps(result))
+PYEOF
+)
+assert_eq "publish-feed's assemble step delegates to scripts/publish-feed.sh (S5a orchestrator)" "true" \
+    "$(echo "${PUBLISH_FEED_JOB_JSON}" | jq -r '.publish_feed_calls_publish_feed_sh')"
+assert_eq "release-apk-assets' find logic resolves a */\${arch}/*.apk path (not a single-arch artifact dir)" "true" \
+    "$(echo "${PUBLISH_FEED_JOB_JSON}" | jq -r '.release_apk_assets_uses_path_segment_find')"
+
+# scripts/publish-feed.sh itself is where the per-arch resolution logic now
+# lives for the assemble path (it does its own find against the built-apks
+# dir it's given) -- assert directly on the script rather than the workflow
+# YAML for that half.
+PUBLISH_FEED_SH_TEXT=$(cat "${REPO_ROOT}/scripts/publish-feed.sh")
+assert_contains "scripts/publish-feed.sh resolves a given arch's .apk via a */\${arch}/*.apk path segment" \
+    "${PUBLISH_FEED_SH_TEXT}" '*/${arch}/*.apk'
+
+echo
+
+# --- build-apk matrix source is DECOUPLED from build-ipk's (S4/S5a) -----
 #
 # Before S4, build-apk and build-ipk deliberately shared the identical
 # per-arch matrix expression (C1b). S4 decouples them on purpose: build-ipk
-# still matrixes over the flat arches output (ipk must not widen, RFC
-# non-goals), while build-apk now matrixes over the families output
-# (compile once per family). Assert the decoupling directly, rather than
-# asserting equality (which would now be testing the wrong invariant).
+# matrixes over the flat ipk_arches output (ipk must not widen, RFC
+# non-goals), while build-apk matrixes over the compile_families output
+# (compile once per family) -- and S5a's gate-flip is what makes
+# compile_families widen to all 14 families while ipk_arches stays pinned to
+# the 4 historical core arches forever. Assert the decoupling directly,
+# rather than asserting equality (which would now be testing the wrong
+# invariant).
 
-echo "=== build-apk (families) is deliberately decoupled from build-ipk (arches) ==="
+echo "=== build-apk (compile_families) is deliberately decoupled from build-ipk (ipk_arches) ==="
 
 IPK_ARCH_EXPR=$(python3 - "${WORKFLOW}" <<'PYEOF'
 import sys, yaml
@@ -270,12 +322,12 @@ matrix = ((job.get("strategy", {}) or {}).get("matrix", {}) or {})
 print(str(matrix.get("arch", "")))
 PYEOF
 )
-assert_contains "build-ipk's matrix still reads needs.select-matrix.outputs.arches (unchanged)" \
-    "${IPK_ARCH_EXPR}" "needs.select-matrix.outputs.arches"
+assert_contains "build-ipk's matrix reads needs.select-matrix.outputs.ipk_arches (S5a rename, ipk never widens)" \
+    "${IPK_ARCH_EXPR}" "needs.select-matrix.outputs.ipk_arches"
 
 FAMILY_EXPR=$(echo "${STRUCT_JSON}" | jq -r '.apk_matrix_family_expr')
-assert_contains "build-apk's matrix reads needs.select-matrix.outputs.families (S4)" \
-    "${FAMILY_EXPR}" "needs.select-matrix.outputs.families"
+assert_contains "build-apk's matrix reads needs.select-matrix.outputs.compile_families (S5a gate-flip)" \
+    "${FAMILY_EXPR}" "needs.select-matrix.outputs.compile_families"
 
 echo
 

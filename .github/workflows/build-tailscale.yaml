@@ -66,8 +66,9 @@ jobs:
     permissions:
       contents: read
     outputs:
-      arches: ${{ steps.select.outputs.arches }}
-      families: ${{ steps.select.outputs.families }}
+      ipk_arches: ${{ steps.select.outputs.ipk_arches }}
+      compile_families: ${{ steps.select.outputs.compile_families }}
+      publish_arches: ${{ steps.select.outputs.publish_arches }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -80,19 +81,30 @@ jobs:
           # substitution, which swallows a script failure and would emit an
           # empty matrix that silently skips every build job and half-publishes
           # a keys-only feed). Fail loudly on error or an empty/invalid matrix.
-          arches="$(scripts/select-matrix.sh "${{ github.event_name }}")"
-          echo "${arches}" | jq -e 'type == "array" and length > 0' >/dev/null \
-            || { echo "::error::select-matrix produced an empty or invalid matrix: '${arches}'"; exit 1; }
-          echo "arches=${arches}" >> "$GITHUB_OUTPUT"
+          #
+          # S1.5/S5a multi-output contract (RFC §5.3/§5.8): three
+          # independently-gated named outputs -- ipk_arches NEVER widens
+          # (ipk non-goal); compile_families/publish_arches are the S5a GATE
+          # FLIP (core-only filter dropped, every feasible arch/family now
+          # goes live) -- see scripts/select-matrix.sh's own header comment.
+          ipk_arches="$(scripts/select-matrix.sh "${{ github.event_name }}" --ipk-arches)"
+          echo "${ipk_arches}" | jq -e 'type == "array" and length > 0' >/dev/null \
+            || { echo "::error::select-matrix --ipk-arches produced an empty or invalid matrix: '${ipk_arches}'"; exit 1; }
+          echo "ipk_arches=${ipk_arches}" >> "$GITHUB_OUTPUT"
 
           # RFC docs/rfc-apk-arch-coverage.md §5.3/S4: build-apk compiles ONCE
           # PER FAMILY, then packages that family's (gated) arches in an
           # in-job shell loop -- never a second per-arch matrix stage. Same
-          # loud "empty/invalid matrix" discipline as the arches output above.
-          families="$(scripts/select-matrix.sh "${{ github.event_name }}" --families)"
-          echo "${families}" | jq -e 'type == "array" and length > 0' >/dev/null \
-            || { echo "::error::select-matrix --families produced an empty or invalid matrix: '${families}'"; exit 1; }
-          echo "families=${families}" >> "$GITHUB_OUTPUT"
+          # loud "empty/invalid matrix" discipline as the ipk_arches output above.
+          compile_families="$(scripts/select-matrix.sh "${{ github.event_name }}" --compile-families)"
+          echo "${compile_families}" | jq -e 'type == "array" and length > 0' >/dev/null \
+            || { echo "::error::select-matrix --compile-families produced an empty or invalid matrix: '${compile_families}'"; exit 1; }
+          echo "compile_families=${compile_families}" >> "$GITHUB_OUTPUT"
+
+          publish_arches="$(scripts/select-matrix.sh "${{ github.event_name }}" --publish-arches)"
+          echo "${publish_arches}" | jq -e 'type == "array" and length > 0' >/dev/null \
+            || { echo "::error::select-matrix --publish-arches produced an empty or invalid matrix: '${publish_arches}'"; exit 1; }
+          echo "publish_arches=${publish_arches}" >> "$GITHUB_OUTPUT"
 
   # A5a: qemu binfmt registration + foreign-arch exec smoke test. Proves
   # docker/setup-qemu-action's standard registration PLUS the custom
@@ -113,7 +125,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        arch: ${{ fromJson(needs.select-matrix.outputs.arches) }}
+        # S5a: qemu-verify is a CI-verification job, not a publish-set
+        # consumer -- kept scoped to ipk_arches (the historical/core set,
+        # unaffected by the compile_families/publish_arches gate-flip).
+        # Widening CI verification itself to the full feasible set is S7a's
+        # job (native-arch qemu verify, event-conditional), out of scope here.
+        arch: ${{ fromJson(needs.select-matrix.outputs.ipk_arches) }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -154,7 +171,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        arch: ${{ fromJson(needs.select-matrix.outputs.arches) }}
+        # S5a: same scoping rationale as qemu-verify above -- ipk_arches
+        # (unaffected by the gate-flip); widening is S7a's job.
+        arch: ${{ fromJson(needs.select-matrix.outputs.ipk_arches) }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -196,7 +215,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        arch: ${{ fromJson(needs.select-matrix.outputs.arches) }}
+        # S5a: build-ipk stays on ipk_arches (the RFC non-goal: ipk must NOT
+        # widen with the apk arch set, independent of the S5a gate-flip).
+        arch: ${{ fromJson(needs.select-matrix.outputs.ipk_arches) }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -269,26 +290,26 @@ jobs:
   #
   # S4 restructure (the Dockerfile `apk` stage this job used to build via
   # `--target apk` was DELETED this slice): the matrix is now over
-  # select-matrix's FAMILIES output, not its flat arches output --
+  # select-matrix's compile_families output, not its flat arches output --
   # `docker build --target build` compiles ONE static binary per family
   # (families share a binary; RFC §5.1 "decouple compile from packaging"),
   # then a plain in-job shell loop packages that family's (gated) arches via
   # the host-side scripts/package-apk.sh -- no second matrix stage, no
-  # redundant re-fetch of the compiled binary (design F4). Artifact naming
-  # is UNCHANGED from before this restructure: one `apk-<archname>` artifact
-  # per arch, `packages/<arch>/` path -- publish-feed/release-apk-assets'
-  # `built-apks/apk-${arch}` lookups need no changes.
+  # redundant re-fetch of the compiled binary (design F4).
   #
-  # KNOWN SCOPE LIMIT (see the "Guard" step below): the upload step is a
-  # static YAML step, so it can only emit ONE named artifact per family job
-  # today -- correct because core-gating (kept by this slice; widening to
-  # all 14 families/30 arches is S5a's gate-flip) guarantees exactly one
-  # gated arch per family right now. A family with N>1 gated arches would
-  # need this upload mechanism generalized (a bounded set of conditional
-  # static steps, or a small per-family upload helper) -- deferred to S5a,
-  # which already revisits this wiring when it drops the core-only filter.
-  # The guard step hard-fails loudly rather than silently dropping arches if
-  # that assumption is ever violated before S5a lands.
+  # S5a GENERALIZED UPLOAD (RFC §5.3/S5a): the gate-flip means a family can
+  # now carry MANY gated arches (e.g. A64 has 4), but a GitHub Actions
+  # upload-artifact step is static YAML -- it cannot loop over a
+  # runtime-sized arch list. Fixed by uploading ONE artifact PER FAMILY
+  # (`apk-family-<id>`, e.g. `apk-family-a64`) containing every one of that
+  # family's arch subdirs (`packages/<arch>/*.apk` for each gated arch) --
+  # the packaging loop above already writes one subdir per arch, so the
+  # upload step just needs `path: packages/*` (the whole tree), not a
+  # per-arch glob. The old single-arch-index-only upload + its guard step (S4's
+  # documented "KNOWN SCOPE LIMIT", now resolved) are GONE. Downstream
+  # consumers (publish-feed, release-apk-assets) find a given arch's .apk by
+  # searching the downloaded tree for a `<arch>/*.apk` path segment, not by
+  # assuming a 1:1 artifact-name-to-arch mapping.
   build-apk:
     if: github.event.inputs.republish != 'true'
     needs: select-matrix
@@ -299,7 +320,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        family: ${{ fromJson(needs.select-matrix.outputs.families) }}
+        family: ${{ fromJson(needs.select-matrix.outputs.compile_families) }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -388,23 +409,17 @@ jobs:
               --out "packages/${arch}/tailscale-${VERSION}-${arch}.apk"
           done
 
-      # See the job-level "KNOWN SCOPE LIMIT" note above: the upload step
-      # below can only emit one named artifact, so it's wired for exactly
-      # the family's single gated arch -- hard-fail loudly here rather than
-      # silently uploading only arches[0] if that ever stops holding.
-      - name: Guard -- upload step assumes exactly 1 gated arch per family
-        run: |
-          COUNT=$(echo '${{ toJson(matrix.family.arches) }}' | jq 'length')
-          if [ "${COUNT}" -ne 1 ]; then
-            echo "::error::build-apk family ${{ matrix.family.family }} has ${COUNT} gated arches, but the Upload artifact step is only wired for exactly 1 per family (RFC docs/rfc-apk-arch-coverage.md §5.3/S4 -- see the build-apk job-level comment). Generalize the upload step (a bounded set of conditional static steps, or a per-family upload helper) before widening tier==core/canary gating past 1 arch/family."
-            exit 1
-          fi
-
+      # S5a: one artifact per FAMILY (not per arch) -- see the job-level
+      # comment above. `packages/*` carries every gated arch's own
+      # subdirectory (packages/<arch>/tailscale-<ver>-<arch>.apk), produced
+      # by the packaging loop above; downloaders (publish-feed,
+      # release-apk-assets) search the extracted tree for a `<arch>/*.apk`
+      # path segment rather than assuming one artifact equals one arch.
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: apk-${{ matrix.family.arches[0] }}
-          path: packages/${{ matrix.family.arches[0] }}/*
+          name: apk-family-${{ steps.tag.outputs.family_lc }}
+          path: packages/*
 
       # C5 (RFC §4.6): loud, release-time alert on an apk-path failure --
       # only fires if a PRIOR step in this same matrix leg failed. Never
@@ -679,6 +694,15 @@ jobs:
       # bearer-token auth both live inside that shared script now, so both
       # jobs get them for free.
       #
+      # S5a: the CROSS-ARCH orchestration (bounded concurrency, per-arch
+      # checkpoint/retry rounds, accumulate-all reporting) is now factored
+      # into scripts/publish-feed.sh -- the same H6 rationale that extracted
+      # publish-arch.sh applies here: an inline loop over up to 30 arches
+      # isn't independently unit-testable, a script stubbable via env is
+      # (see tests/apk/publish-feed.sh). Reads the WIDENED publish_arches
+      # output (the S5a §5.8 gate-flip: every feasible arch, not just the 4
+      # historical `tier=="core"` ones).
+      #
       # H3: IMPRIMATUR_AUTH_TOKEN is a NEW repo secret -- a human deploy step
       # (create it once imprimatur's auth-token support is deployed to
       # sign.leavitt.info). Backward-compatible: empty/unset here sends a
@@ -687,7 +711,7 @@ jobs:
       - name: Assemble + sign + guard + retain each arch
         env:
           FORCE_PUBLISH: ${{ github.event.inputs.force_publish }}
-          ARCHES_JSON: ${{ needs.select-matrix.outputs.arches }}
+          PUBLISH_ARCHES_JSON: ${{ needs.select-matrix.outputs.publish_arches }}
           IMPRIMATUR_AUTH_TOKEN: ${{ secrets.IMPRIMATUR_AUTH_TOKEN }}
         run: |
           set -eu
@@ -698,17 +722,13 @@ jobs:
           FORCE_ARGS=""
           if [ "${FORCE_PUBLISH}" = "true" ]; then FORCE_ARGS="--force"; fi
 
-          # Fail closed on an empty matrix: without this the loop below runs
-          # zero times and the job deploys a keys-only tree (no packages.adb)
-          # while reporting success -- a vacuous half-publish.
-          ARCH_COUNT=$(echo "${ARCHES_JSON}" | jq -r '.[].name' | grep -c . || true)
+          # Fail closed on an empty matrix: without this scripts/publish-feed.sh
+          # would run zero arches and the job would deploy a keys-only tree
+          # (no packages.adb) while reporting success -- a vacuous half-publish.
+          ARCH_COUNT=$(echo "${PUBLISH_ARCHES_JSON}" | jq -r '.[].name' | grep -c . || true)
           [ "${ARCH_COUNT}" -ge 1 ] || { echo "::error::no arches to publish (empty matrix) -- refusing to deploy a keys-only feed"; exit 1; }
 
-          for arch in $(echo "${ARCHES_JSON}" | jq -r '.[].name'); do
-            APK_FILE=$(find "built-apks/apk-${arch}" -name '*.apk' | head -1)
-            [ -n "${APK_FILE}" ] || { echo "::error::no built .apk found for ${arch} under built-apks/apk-${arch}"; exit 1; }
-            sh scripts/publish-arch.sh "${arch}" "${APK_FILE}" "$(basename "${APK_FILE}")" "${PAGES_ROOT}" ${FORCE_ARGS}
-          done
+          sh scripts/publish-feed.sh assemble "${PUBLISH_ARCHES_JSON}" built-apks "${PAGES_ROOT}" ${FORCE_ARGS}
 
           # Dormant on GitHub Pages today (see the job-level comment above) --
           # kept for a future _headers-aware mirror.
@@ -728,14 +748,17 @@ jobs:
         id: deployment
         uses: actions/deploy-pages@v4
 
+      # S5a: post-publish verify is also factored into scripts/publish-feed.sh
+      # (`verify` mode) -- bounded settle-retry per arch (CDN propagation lag
+      # vs real corruption) + accumulate the COMPLETE failing set across all
+      # arches before reporting to notify-alert.sh, rather than aborting mid-
+      # loop on the first failing arch.
       - name: Post-publish integrity verify (index-walk, §4.3)
         env:
-          ARCHES_JSON: ${{ needs.select-matrix.outputs.arches }}
+          PUBLISH_ARCHES_JSON: ${{ needs.select-matrix.outputs.publish_arches }}
         run: |
           set -eu
-          for arch in $(echo "${ARCHES_JSON}" | jq -r '.[].name'); do
-            sh scripts/feed-guard.sh verify-tree "pages-root/apk/${arch}" "https://apk.leavitt.dev/apk/${arch}"
-          done
+          sh scripts/publish-feed.sh verify "${PUBLISH_ARCHES_JSON}" pages-root https://apk.leavitt.dev
 
       # C5 (RFC §4.6): loud alert on a publish-path failure (signing
       # round-trip, monotonicity rejection, Pages deploy, or the
@@ -1063,9 +1086,18 @@ jobs:
           pattern: 'apk-*'
           path: built-apks
 
+      # S5a: reads the WIDENED publish_arches output (the §5.8 gate-flip) so
+      # the release's attached .apk assets match the same set that
+      # publish-feed actually ships to the live feed -- not just the 4
+      # historical core arches. S5a also generalized build-apk's upload to
+      # one artifact PER FAMILY (`apk-family-<id>`, containing every arch's
+      # own subdir) rather than one artifact per arch (see build-apk's
+      # job-level comment), so the lookup below searches the downloaded tree
+      # for a `<arch>/*.apk` path segment instead of assuming an
+      # `apk-<arch>`-named artifact directory exists.
       - name: Assemble arch-namespaced release assets
         env:
-          ARCHES_JSON: ${{ needs.select-matrix.outputs.arches }}
+          ARCHES_JSON: ${{ needs.select-matrix.outputs.publish_arches }}
         run: |
           set -eu
           VERSION="${{ steps.version.outputs.version }}"
@@ -1075,8 +1107,8 @@ jobs:
           cp apk-signing.pem release-assets/
 
           for arch in $(echo "${ARCHES_JSON}" | jq -r '.[].name'); do
-            SRC_APK=$(find "built-apks/apk-${arch}" -name '*.apk' | head -1)
-            [ -n "${SRC_APK}" ] || { echo "::error::no built .apk found for ${arch} under built-apks/apk-${arch}"; exit 1; }
+            SRC_APK=$(find built-apks -type f -path "*/${arch}/*.apk" | head -1)
+            [ -n "${SRC_APK}" ] || { echo "::error::no built .apk found for ${arch} under built-apks (searched for a */\${arch}/*.apk path)"; exit 1; }
             cp "${SRC_APK}" "release-assets/tailscale-${VERSION}-r${PKG_RELEASE}-${arch}.apk"
           done
 

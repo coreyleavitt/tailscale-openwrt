@@ -11,10 +11,12 @@
 #
 #   1. Structural: the workflow YAML no longer has the 4 old hand-written
 #      jobs, has exactly one matrix job driving ipk builds off
-#      needs.select-matrix.outputs.arches, and the release job's `needs`/
-#      output references were repointed at it. Also asserts the matrix
-#      actually expands (scripts/select-matrix.sh workflow_dispatch) to the
-#      same 4 arch names the old hand-written jobs used.
+#      needs.select-matrix.outputs.ipk_arches (S5a's multi-output rename --
+#      ipk_arches is the historical set that never widens, RFC §5.3/§5.8),
+#      and the release job's `needs`/output references were repointed at it.
+#      Also asserts the matrix actually expands (scripts/select-matrix.sh
+#      workflow_dispatch --ipk-arches) to the same 4 arch names the old
+#      hand-written jobs used.
 #
 #   2. Empirical (the strongest guard): build the aarch64_cortex-a53 .ipk
 #      twice through the real tailscale-package/Dockerfile -- once with the
@@ -87,8 +89,10 @@ old_present = [n for n in old_names if n in jobs]
 # qemu-verify/apk-install-verify, which are A5a's apk-side jobs, and
 # build-apk, C1b's sibling apk-build matrix job -- same select-matrix
 # source and same OPENWRT_ARCH/docker-build shape by design, §4.6) whose
-# strategy.matrix.arch references needs.select-matrix.outputs.arches, and
-# whose steps shell out to `docker build` with an OPENWRT_ARCH build-arg.
+# strategy.matrix.arch references needs.select-matrix.outputs.ipk_arches
+# (S5a's multi-output rename -- ipk_arches is the historical/never-widens
+# set, RFC §5.3/§5.8), and whose steps shell out to `docker build` with an
+# OPENWRT_ARCH build-arg.
 candidates = []
 for name, job in jobs.items():
     if name in ("select-matrix", "qemu-verify", "apk-install-verify", "build-apk", "release"):
@@ -96,7 +100,7 @@ for name, job in jobs.items():
     strategy = job.get("strategy", {}) or {}
     matrix = strategy.get("matrix", {}) or {}
     arch_expr = matrix.get("arch", "")
-    if "needs.select-matrix.outputs.arches" not in str(arch_expr):
+    if "needs.select-matrix.outputs.ipk_arches" not in str(arch_expr):
         continue
     steps_text = json.dumps(job.get("steps", []))
     if "OPENWRT_ARCH" not in steps_text or "docker build" not in steps_text:

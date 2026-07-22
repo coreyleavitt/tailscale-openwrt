@@ -69,6 +69,11 @@
 #                           https://apk.leavitt.dev/apk)
 #   IMPRIMATUR_AUTH_TOKEN   optional bearer token (H3), default empty
 #   RETAIN_N                last-N retention count (default: 3)
+#   SIGN_RETRIES            /sign/ec POST retry count (S5a, RFC §5.4 round-2
+#                           P-SEV2 -- mirrors the ipk `release` job's own
+#                           3x-retry sign loop), default: 3
+#   SIGN_RETRY_DELAY        seconds slept between sign retries (default: 5;
+#                           tests set 0)
 set -eu
 
 die() {
@@ -98,6 +103,8 @@ SIGN_URL="${SIGN_URL:-https://sign.leavitt.info/sign/ec}"
 LIVE_BASE_URL="${LIVE_BASE_URL:-https://apk.leavitt.dev/apk}"
 IMPRIMATUR_AUTH_TOKEN="${IMPRIMATUR_AUTH_TOKEN:-}"
 RETAIN_N="${RETAIN_N:-3}"
+SIGN_RETRIES="${SIGN_RETRIES:-3}"
+SIGN_RETRY_DELAY="${SIGN_RETRY_DELAY:-5}"
 
 [ -n "${ARCH}" ] || die "arch must not be empty"
 [ -f "${APK_FILE}" ] || die "apk file not found: ${APK_FILE}"
@@ -141,16 +148,36 @@ printf 'Authorization: Bearer %s\n' "${IMPRIMATUR_AUTH_TOKEN}" > "${AUTH_HEADER_
 # /bin/sh, e.g. dash/busybox, where `set -o pipefail` is a hard error, not a
 # no-op) so the pipe is avoided altogether: curl writes the response body to
 # a file via `-o`, and its own exit status is checked directly.
+#
+# S5a (RFC §5.4 round-2 P-SEV2): retry the POST itself with backoff -- at
+# 30 arches the odds of >=1 transient signer failure per run are far higher
+# than at today's 4, and a bare single-shot curl call would abort the whole
+# publish (or, with S5a's publish-feed.sh orchestrator, just this one arch's
+# round) on a blip that a second attempt would have sailed through. Mirrors
+# the ipk `release` job's own 3x-retry `/sign/usign` loop.
 SIGN_RESPONSE="${ARCH_DIR}/sign-response.json"
-if ! curl -fsS -X POST "${SIGN_URL}" \
-    -H 'Content-Type: application/json' \
-    -H "@${AUTH_HEADER_FILE}" \
-    -d "{\"message\": \"$(base64 -w0 "${ARCH_DIR}/preimage.bin")\"}" \
-    -o "${SIGN_RESPONSE}"; then
-    rm -f "${AUTH_HEADER_FILE}" "${SIGN_RESPONSE}"
-    die "sign request to ${SIGN_URL} failed for ${ARCH} (curl error, see above -- aborting before the signature-content check)"
-fi
+SIGN_ATTEMPT=1
+SIGN_OK=0
+while [ "${SIGN_ATTEMPT}" -le "${SIGN_RETRIES}" ]; do
+    if curl -fsS -X POST "${SIGN_URL}" \
+        -H 'Content-Type: application/json' \
+        -H "@${AUTH_HEADER_FILE}" \
+        -d "{\"message\": \"$(base64 -w0 "${ARCH_DIR}/preimage.bin")\"}" \
+        -o "${SIGN_RESPONSE}"; then
+        SIGN_OK=1
+        break
+    fi
+    echo "publish-arch.sh: sign attempt ${SIGN_ATTEMPT}/${SIGN_RETRIES} failed for ${ARCH} (curl error, see above)" >&2
+    if [ "${SIGN_ATTEMPT}" -lt "${SIGN_RETRIES}" ]; then
+        sleep "${SIGN_RETRY_DELAY}"
+    fi
+    SIGN_ATTEMPT=$((SIGN_ATTEMPT + 1))
+done
 rm -f "${AUTH_HEADER_FILE}"
+if [ "${SIGN_OK}" -ne 1 ]; then
+    rm -f "${SIGN_RESPONSE}"
+    die "sign request to ${SIGN_URL} failed for ${ARCH} after ${SIGN_RETRIES} attempts (curl error, see above -- aborting before the signature-content check)"
+fi
 SIG_B64=$(jq -r .signature "${SIGN_RESPONSE}")
 rm -f "${SIGN_RESPONSE}"
 if [ -z "${SIG_B64}" ] || [ "${SIG_B64}" = "null" ]; then

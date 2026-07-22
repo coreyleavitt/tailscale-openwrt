@@ -184,6 +184,13 @@ chmod +x "${FAKE_FEED_GUARD}"
 # FIX4 test support: FAKE_CURL_POST_RC lets a test force the sign POST to
 # fail (simulating a 401/5xx curl -f failure) before any signature content
 # is ever produced.
+#
+# S5a retry/backoff test support: FAKE_CURL_POST_FAIL_TIMES (with
+# FAKE_CURL_POST_COUNTER_FILE tracking attempts across invocations) lets a
+# test simulate a TRANSIENT failure -- fail the first N POST attempts, then
+# succeed -- to prove publish-arch.sh's new SIGN_RETRIES loop actually
+# retries and recovers, distinct from FAKE_CURL_POST_RC's "always fails"
+# (persistent failure) case.
 FAKE_CURL_DIR="${WORKDIR}/bin"
 cat > "${FAKE_CURL_DIR}/curl" <<'EOF'
 #!/bin/sh
@@ -203,7 +210,16 @@ done
 
 case " $* " in
     *" -X POST "*)
-        if [ "${FAKE_CURL_POST_RC:-0}" != "0" ]; then
+        if [ -n "${FAKE_CURL_POST_COUNTER_FILE:-}" ] && [ "${FAKE_CURL_POST_FAIL_TIMES:-0}" -gt 0 ] 2>/dev/null; then
+            _n=0
+            [ -f "${FAKE_CURL_POST_COUNTER_FILE}" ] && _n=$(cat "${FAKE_CURL_POST_COUNTER_FILE}")
+            _n=$((_n + 1))
+            echo "${_n}" > "${FAKE_CURL_POST_COUNTER_FILE}"
+            if [ "${_n}" -le "${FAKE_CURL_POST_FAIL_TIMES}" ]; then
+                exit "${FAKE_CURL_POST_RC:-22}"
+            fi
+            # else: past the fail-count -- fall through to the success path.
+        elif [ "${FAKE_CURL_POST_RC:-0}" != "0" ]; then
             exit "${FAKE_CURL_POST_RC}"
         fi
         BODY='{"signature":"'"$(printf 'FAKESIG' | base64 -w0)"'"}'
@@ -226,6 +242,13 @@ export ADB_SIGN_PY="${FAKE_ADB_SIGN}"
 export FEED_GUARD="${FAKE_FEED_GUARD}"
 export PUBKEY_PATH="${PUBKEY}"
 export PATH="${WORKDIR}/bin:${PATH}"
+# S5a: keep every test in this file fast -- SIGN_RETRY_DELAY=0 means a
+# forced-failure test's retry loop (default 3 attempts) sleeps 0s between
+# them instead of the production default (5s), so a persistent-failure test
+# below still exercises all 3 attempts without adding 10s to this file's
+# runtime. Individual tests override SIGN_RETRIES where the attempt COUNT
+# itself is what's being asserted.
+export SIGN_RETRY_DELAY=0
 
 run_publish() {
     # run_publish <log-prefix> [publish-arch.sh args...] -- captures
@@ -485,5 +508,62 @@ assert_eq "sign-POST curl failure: packages.adb never written" "false" \
     "$([ -f "${PAGES_ROOT_CURLFAIL}/apk/aarch64_cortex-a53/packages.adb" ] && echo true || echo false)"
 assert_eq "sign-POST curl failure: feed-guard.sh NEVER called (fails before monotonicity/deploy)" "" \
     "$(cat "${FEED_GUARD_LOG6}")"
+
+echo
+
+# ===========================================================================
+# 8. S5a: sign-POST retry/backoff -- a transient failure is retried and
+#    recovers; a persistent failure eventually fails loud after SIGN_RETRIES
+#    attempts (RFC §5.4 round-2 P-SEV2, mirrors the ipk `release` job's own
+#    3x-retry /sign/usign loop).
+# ===========================================================================
+echo "=== 8. S5a: sign-POST retry/backoff ==="
+
+PAGES_ROOT_RETRY_OK="${WORKDIR}/pages-root-retry-ok"
+FEED_GUARD_LOG7="${WORKDIR}/feed-guard-retry-ok.log"
+CURL_LOG7="${WORKDIR}/curl-retry-ok.log"
+COUNTER_OK="${WORKDIR}/curl-counter-ok"
+: > "${FEED_GUARD_LOG7}"
+: > "${CURL_LOG7}"
+rm -f "${COUNTER_OK}"
+
+# Transient: fail the first 2 attempts, succeed on the 3rd (== SIGN_RETRIES'
+# default) -- proves the loop RETRIES rather than giving up on the first
+# failure, and that a recovered attempt still produces a normal happy path.
+RC=$(FEED_GUARD_LOG="${FEED_GUARD_LOG7}" CURL_LOG="${CURL_LOG7}" \
+     FAKE_MONOTONIC_RC=0 FAKE_VERIFY_RESULT=VALID FAKE_RETENTION_JSON='["tailscale-1.99.0-r1.apk"]' \
+     FAKE_CURL_POST_FAIL_TIMES=2 FAKE_CURL_POST_COUNTER_FILE="${COUNTER_OK}" FAKE_CURL_POST_RC=22 \
+     run_publish "retry-ok" "aarch64_cortex-a53" "${SRC_APK}" "${SRC_APK_BASENAME}" "${PAGES_ROOT_RETRY_OK}")
+assert_eq "transient failure (2x) then success: publish-arch.sh still succeeds overall" "0" "${RC}"
+assert_eq "transient failure then success: packages.adb IS written (recovered)" "true" \
+    "$([ -f "${PAGES_ROOT_RETRY_OK}/apk/aarch64_cortex-a53/packages.adb" ] && echo true || echo false)"
+POST_ATTEMPTS_OK=$(grep -c -- '-X POST' "${CURL_LOG7}")
+assert_eq "transient failure then success: sign POST was attempted 3 times (2 failures + 1 success)" "3" "${POST_ATTEMPTS_OK}"
+
+echo
+
+# Persistent: every attempt fails -- publish-arch.sh must exhaust
+# SIGN_RETRIES (explicitly set to 3 here, independent of the default) and
+# THEN fail loud, never hang/retry forever and never silently succeed.
+PAGES_ROOT_RETRY_FAIL="${WORKDIR}/pages-root-retry-fail"
+FEED_GUARD_LOG8="${WORKDIR}/feed-guard-retry-fail.log"
+CURL_LOG8="${WORKDIR}/curl-retry-fail.log"
+: > "${FEED_GUARD_LOG8}"
+: > "${CURL_LOG8}"
+
+RC=$(FEED_GUARD_LOG="${FEED_GUARD_LOG8}" CURL_LOG="${CURL_LOG8}" \
+     SIGN_RETRIES=3 FAKE_CURL_POST_RC=22 \
+     run_publish "retry-fail" "aarch64_cortex-a53" "${SRC_APK}" "${SRC_APK_BASENAME}" "${PAGES_ROOT_RETRY_FAIL}")
+assert_eq "persistent failure: exit non-zero after exhausting retries" "true" \
+    "$([ "${RC}" -ne 0 ] && echo true || echo false)"
+assert_contains "persistent failure: names the retry exhaustion (mentions the attempt count)" \
+    "$(cat "${WORKDIR}/retry-fail.log")" "after 3 attempts"
+POST_ATTEMPTS_FAIL=$(grep -c -- '-X POST' "${CURL_LOG8}")
+assert_eq "persistent failure: sign POST was attempted exactly SIGN_RETRIES (3) times, not more/fewer" \
+    "3" "${POST_ATTEMPTS_FAIL}"
+assert_eq "persistent failure: packages.adb never written" "false" \
+    "$([ -f "${PAGES_ROOT_RETRY_FAIL}/apk/aarch64_cortex-a53/packages.adb" ] && echo true || echo false)"
+assert_eq "persistent failure: feed-guard.sh NEVER called" "" \
+    "$(cat "${FEED_GUARD_LOG8}")"
 
 harness_finish "tests/apk/publish-arch.sh"

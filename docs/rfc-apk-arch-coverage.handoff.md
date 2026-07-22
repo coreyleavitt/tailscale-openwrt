@@ -1,9 +1,30 @@
 # RFC: Generic OpenWrt-arch coverage — handoff
 
-- **Stage:** 3 /tdd slice grind — **6/14 done** (S1a/S1b/S1c/S2/S3/S4)   •   **RFC:** `docs/rfc-apk-arch-coverage.md`
+- **Stage:** 3 /tdd slice grind — **7/14 done** (S1a/S1b/S1c/S2/S3/S4/S5a)   •   **RFC:** `docs/rfc-apk-arch-coverage.md`
 - **Branch:** `rfc-apk-arch-coverage` (off master; keep.d fix `92f6b97` is the base). Commits: `8c70672`
-  RFC doc · `6bbbcc0` S1 · `f41fd43` S2 · `a6b12dc` S3 · S4 committing now. NOT pushed yet. Handoff docs
-  untracked (working docs). Next: S5a.
+  RFC doc · `6bbbcc0` S1 · `f41fd43` S2 · `a6b12dc` S3 · `cf5cf41` S4 · S5a committing now. NOT pushed yet.
+  Handoff docs untracked (working docs). Next: S5b.
+- **S5a verified (the §5.8 GATE FLIP — 30 arches now go live):** `select-matrix.sh` split into 3 outputs:
+  `--ipk-arches` (default; stays historical `tier==core`, 4 arches — never widens), `--compile-families`
+  (14, `reason==null`) and `--publish-arches` (30, `reason==null`) — the last two DROP the core-only filter
+  = the gate flip. PR branch stays `canary==true` for all three. Confirmed live: ipk=4, families=14,
+  publish=30. Wiring: `build-ipk`/`qemu-verify`/`apk-install-verify`→`ipk_arches`; `build-apk`→
+  `compile_families`; `publish-feed`+`release-apk-assets`→`publish_arches`. Upload generalized: one
+  `apk-family-<id>` artifact per family (whole `packages/*` tree) — S4's `arches[0]` upload + its hard-fail
+  guard both DELETED; `release-apk-assets` `.apk` lookup now searches `*/${arch}/*.apk` path segment (not an
+  `apk-${arch}` dir). New `scripts/publish-feed.sh` orchestrator (`assemble`/`verify`/internal `--worker`):
+  bounded concurrency `TS_SIGN_CONCURRENCY` (default 2), per-arch checkpoint (skips already-verified
+  packages.adb), `TS_PUBLISH_MAX_ROUNDS` (default 3) retry rounds, verify-mode settle-retry + accumulate-all
+  → notify-alert.sh. `publish-arch.sh` gained `SIGN_RETRIES`/`SIGN_RETRY_DELAY` (3/5s) retry+backoff around
+  `/sign/ec`. Tests: select-matrix (3-mode, 52 assn), publish-feed (new, 40+, checkpoint RED proven),
+  publish-arch (+13 retry), apk-matrix (family-artifact shape), ipk-matrix (rename). All fast suites green,
+  YAML parses, every `needs.select-matrix.outputs.*` ref matches a declared output.
+  **⚠ S5b-PREREQ (not a bug, expected):** on the FIRST real post-gate-flip run, all 26 newly-`extended`
+  arches hit `feed-guard.sh check-monotonic`'s "no live index" hard-error (exit 2, needs `--force`) on
+  first-ever publish. `assemble` is all-or-nothing (S5b's atomicity split deliberately NOT here), so that
+  one run needs `force_publish=true` (coarse) OR wait for S5b's proper per-arch `tier==extended`
+  bootstrap-force. Concurrency N=2 is the documented conservative interim; true `/sign/ec` ceiling is an
+  unrun live-service spike — env-tunable to any N.
 - **S4 verified:** `select-matrix.sh --families` emits one row per gated family (4 core: A64/ASOFT/M32BE/
   M32LE), each carrying its build tuple + sorted gated arch list; order-independent. `build-apk` job
   rewritten: matrix over `families`, `docker build --target build` once per family, then a shell loop over
@@ -164,7 +185,10 @@ live feed+release** (arm_cortex-a7 rebuild, SHA256SUMS re-sign, GOMEMLIMIT drop)
       Uncommitted. Next: S4 (build-apk matrix over families, in-job packaging loop, delete the dead
       Dockerfile `apk` stage + old `docker build --target apk` test path).
 - [x] S4 build-apk fan-out (delete Dockerfile apk stage + old docker-based test path)
-- [ ] S5a publish mechanics+gate-flip · S5b rollout/tier/retention
+- [x] S5a publish mechanics + §5.8 gate-flip (3-output select-matrix, publish-feed.sh orchestrator,
+      per-family artifact upload, sign retry/backoff). S5b bootstrap-force is a hard prereq for the first
+      real deploy (see ⚠ note above).
+- [ ] S5b rollout/tier/atomicity-split/retention
 - [ ] S6 installer codegen · S7a qemu verify+spikes · S7b unverified tier · S8 docs · S9 drift cron
 - **Note:** keep.d sysupgrade fix shipped separately (commit `92f6b97`, not part of the RFC slices).
 
