@@ -64,6 +64,36 @@ assert_not_contains() {
     esac
 }
 
+# apk_arch_override_line native_line arch -- the ORIGINAL A4/A5b multi-arch
+# `/etc/apk/arch` mechanism (RFC docs/rfc-apk-builds.md correction 1): append
+# `arch` as an additional acceptable line after whatever the container
+# already reports, UNCONDITIONALLY (no check that `arch` matches natively).
+# Kept, unchanged, for install.sh's DEFAULT (non-native-only) path -- the
+# ipk_arches-scoped legacy install coverage for aarch64_cortex-a53/
+# arm_cortex-a7 genuinely needs this (RFC §5.6/S7a's D2: "keep existing
+# multi-arch install coverage that needs the override in a clearly separate,
+# named path"). Pure string function, no docker -- factored out purely so
+# tests/apk/install-native-verify.sh can assert its behavior hermetically.
+apk_arch_override_line() {
+    printf '%s\n%s' "$1" "$2"
+}
+
+# native_arch_matches native_line arch -- S7a/D2's native-only assertion:
+# true (exit 0) iff the container's OWN reported arch (the FIRST line of
+# native_line -- a stock device's /etc/apk/arch reports its own arch on line
+# one; any later line is a fallback, not what the device itself IS) already
+# equals `arch`, verbatim, with NO mutation performed. This is what
+# INSTALL_NATIVE_ONLY=1 uses in tests/apk/install.sh instead of
+# apk_arch_override_line -- a family whose verify_families representative
+# genuinely IS the native arch (every S7a-pinned family, by construction --
+# see scripts/families.sh --with-ci) passes this without any override; a
+# mismatch here is exactly the class of bug D2 removes the override to catch
+# (e.g. arm_cortex-a7 against armsr/armv7's native arm_cortex-a15_neon-vfpv4).
+native_arch_matches() {
+    _native_first_line=$(printf '%s\n' "$1" | head -n1)
+    [ "${_native_first_line}" = "$2" ]
+}
+
 # docker_run image [args...] -- thin wrapper kept for a single, consistent
 # call style across tests; captures nothing itself (callers decide whether
 # to capture output), just runs `docker run --rm`.
@@ -115,6 +145,23 @@ register_openwrt_mips_binfmt() {
         printf "%s" ":qemu-mips-owrt:M::\x7f\x45\x4c\x46\x01\x02\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x08:\xff\xff\xff\xff\xff\xff\xff\x00\x00\xff\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff:/usr/bin/qemu-mips-static:F" > /proc/sys/fs/binfmt_misc/register
         printf "%s" ":qemu-mipsel-owrt:M::\x7f\x45\x4c\x46\x01\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x08\x00:\xff\xff\xff\xff\xff\xff\xff\x00\x00\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff\xff:/usr/bin/qemu-mipsel-static:F" > /proc/sys/fs/binfmt_misc/register
     '
+}
+
+# register_loongarch64_binfmt -- S7a M3 spike finding: multiarch/qemu-user-
+# static (register_standard_qemu_binfmt above) does NOT ship a loong64
+# emulator at all -- a loongarch64 container exec's "exec format error"
+# under it, regardless of qemu's own ISA support. The runner's ACTUAL CI
+# qemu setup (`docker/setup-qemu-action@v3`) is backed by tonistiigi/binfmt
+# instead, which DOES register `qemu-loongarch64` (empirically confirmed:
+# a pinned OpenWrt 25.12 loongarch64/generic rootfs execs and reports its
+# real native /etc/apk/arch, loongarch64_generic, under it) -- so CI itself
+# needs no change here. This is purely a LOCAL-dev-parity supplement (mirrors
+# register_openwrt_mips_binfmt's "layer one more specific registration on
+# top" shape) so a bare local `sh tests/apk/qemu.sh` (all verify_families,
+# no CI runner) can also exec the loong64 leg. Requires --privileged docker;
+# safe to call repeatedly.
+register_loongarch64_binfmt() {
+    docker run --rm --privileged tonistiigi/binfmt --install linux/loong64 >/dev/null
 }
 
 # extract_apk_tools_binary dest_dir pkg_dir -- build the `apk-tools` stage

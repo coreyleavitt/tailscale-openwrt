@@ -1,35 +1,36 @@
 #!/bin/sh
 # tests/apk/qemu.sh
 #
-# Slice A5a test (RFC docs/rfc-apk-builds.md §6): proves the CI qemu binfmt
-# setup -- `docker/setup-qemu-action` PLUS the custom ABIVERSION-wildcarded
-# 32-bit mips/mipsel binfmt_misc entries (root-caused in A0; reference
+# Slice A5a/S7a test (RFC docs/rfc-apk-builds.md §6; RFC
+# docs/rfc-apk-arch-coverage.md §5.6): proves the CI qemu binfmt setup --
+# `docker/setup-qemu-action` PLUS the custom ABIVERSION-wildcarded 32-bit
+# mips/mipsel binfmt_misc entries (root-caused in A0; reference
 # implementation in tests/apk/rootfs.sh, factored into lib.sh's
 # register_standard_qemu_binfmt/register_openwrt_mips_binfmt for reuse here) --
 # actually lets a foreign-arch container exec. Two things are asserted:
 #
-#   1. Binfmt + exec: for each of the 4 CORE (tier=="core") arches.json
-#      entries (or just one, if given as $1 -- this is how the CI matrix job
-#      invokes it per-arch), `docker run` the pinned rootfs image and assert
-#      a trivial foreign binary execs (`uname -m`) and reports the expected
-#      machine. Binfmt registration is UNCONDITIONAL and reset-first here
-#      (unlike rootfs.sh's lazy self-heal on failure) so this test is a real
-#      proof of registration, not reliant on host state left over from a
-#      previous run.
+#   1. Binfmt + exec: S7a widens this from the 4 tier=="core" arches to
+#      scripts/select-matrix.sh --verify-families' 10 CI-bootable family
+#      representatives (RFC §5.6) -- for each (or just one, if given as $1 --
+#      this is how the CI matrix job invokes it per-arch), `docker run` the
+#      pinned rootfs image and assert a trivial foreign binary execs
+#      (`uname -m`) and reports the expected machine. Binfmt registration is
+#      UNCONDITIONAL and reset-first here (unlike rootfs.sh's lazy self-heal
+#      on failure) so this test is a real proof of registration, not reliant
+#      on host state left over from a previous run.
 #
-#      RFC docs/rfc-apk-arch-coverage.md §5.8 slice S1c: arches.json widened
-#      from 4 to 35 rows in S1b, 31 of which are gated inert (tier==
-#      "extended"/"infeasible", most with rootfs_url/rootfs_sha256 == null --
-#      pinning is deferred to S7a). This exec check must go through the same
-#      tier=="core" gated view scripts/select-matrix.sh's non-PR branch uses
-#      -- iterating the raw table by index would attempt to download/import
-#      a `null` rootfs URL for every gated-inert row.
+#      This exec check goes through --verify-families (not the raw 35-row
+#      table, and not `.[].name` -- verify_families rows carry `.verify` as
+#      the arch NAME field) so it never attempts to download/import a `null`
+#      rootfs for one of the 25 non-representative or 4 S7b-unverified rows.
 #
 #   2. Matrix-selection logic (§5 "CI cost / emulation policy"): asserts
 #      scripts/select-matrix.sh selects the canary arch (mips_24kc) for a
 #      simulated `pull_request` event and the tier=="core" 4-arch set for
 #      any other event (e.g. `workflow_dispatch`) -- without a live GitHub
-#      Actions run.
+#      Actions run. (This still exercises the DEFAULT/--ipk-arches mode,
+#      unaffected by --verify-families -- see tests/apk/select-matrix.sh for
+#      the --verify-families-specific selection assertions.)
 #
 # Reuses rootfs.sh's cache dir (tests/apk/.cache) so a prior rootfs.sh run's
 # downloaded/verified tarballs aren't re-fetched; imports with the same
@@ -37,7 +38,7 @@
 # other's cached image.
 #
 # Usage:
-#   sh tests/apk/qemu.sh              # all 4 arches + matrix-logic assertion
+#   sh tests/apk/qemu.sh              # all 10 verify_families arches + matrix-logic assertion
 #   sh tests/apk/qemu.sh <arch_name>  # single arch only (CI per-arch matrix step)
 
 set -eu
@@ -80,6 +81,15 @@ else
     if ! register_openwrt_mips_binfmt; then
         log_fail "register_openwrt_mips_binfmt failed"
     fi
+    # S7a M3 spike: multiarch/qemu-user-static (above) ships no loong64
+    # emulator at all -- local-dev-only supplement, see lib.sh's own
+    # comment. The real CI qemu-verify job sets QEMU_SKIP_BINFMT_SETUP=1
+    # and relies on docker/setup-qemu-action@v3 (tonistiigi/binfmt) instead,
+    # which already covers loong64.
+    echo "Registering loongarch64 binfmt entry (tonistiigi/binfmt, local-dev supplement)..." >&2
+    if ! register_loongarch64_binfmt; then
+        log_fail "register_loongarch64_binfmt failed"
+    fi
 fi
 echo
 
@@ -91,26 +101,45 @@ echo
 # vocabulary (A0 already found those differ): mips 32-bit does not encode
 # endianness in `uname -m` -- both mips_24kc (BE) and mipsel_24kc (LE) report
 # "mips". This is not a test bug; it matches real OpenWrt mips/mipsel devices.
+#
+# S7a: extended for the --verify-families set (RFC §5.6's 10 bootable
+# families, up from the 4 tier==core arches this covered before). Three of
+# these (i386_pentium4/i386_pentium-mmx/x86_64) run NATIVELY on an x86_64
+# runner -- no qemu involved at all -- and empirically report the HOST
+# kernel's own machine string (x86_64), not a 32-bit-specific one; that is
+# not a test bug either, it is how 32-bit x86 userland runs on an x86_64
+# kernel (verified empirically, S7a handoff notes).
 expected_uname_m() {
     case "$1" in
         aarch64_cortex-a53) echo "aarch64" ;;
         arm_cortex-a7) echo "armv7l" ;;
         mips_24kc) echo "mips" ;;
         mipsel_24kc) echo "mips" ;;
+        aarch64_generic) echo "aarch64" ;;
+        arm_cortex-a15_neon-vfpv4) echo "armv7l" ;;
+        mips64_mips64r2) echo "mips64" ;;
+        mips64el_mips64r2) echo "mips64" ;;
+        i386_pentium4) echo "x86_64" ;;
+        i386_pentium-mmx) echo "x86_64" ;;
+        x86_64) echo "x86_64" ;;
+        loongarch64_generic) echo "loongarch64" ;;
         *) echo "" ;;
     esac
 }
 
 echo "=== per-arch exec check ==="
-# tier=="core" (RFC §5.8 S1c) -- go through the same gated view
-# select-matrix.sh's non-PR branch returns, not the raw 35-row table.
-CORE_ARCHES=$("${SELECT_MATRIX}" workflow_dispatch "${ARCHES_JSON}")
-COUNT=$(echo "${CORE_ARCHES}" | jq 'length')
+# S7a: --verify-families (the 10 CI-bootable family representatives),
+# event-conditionally the same way every other select-matrix mode is --
+# not the raw 35-row table, and no longer just the 4 tier==core arches
+# (RFC §5.6's widened CI-verify scope). Rows carry `.verify` as the arch
+# NAME field (families.sh --with-ci's own naming), not `.name`.
+VERIFY_ARCHES=$("${SELECT_MATRIX}" workflow_dispatch --verify-families "${ARCHES_JSON}")
+COUNT=$(echo "${VERIFY_ARCHES}" | jq 'length')
 i=0
 while [ "$i" -lt "$COUNT" ]; do
-    NAME=$(echo "${CORE_ARCHES}" | jq -r ".[$i].name")
-    URL=$(echo "${CORE_ARCHES}" | jq -r ".[$i].rootfs_url")
-    PIN=$(echo "${CORE_ARCHES}" | jq -r ".[$i].rootfs_sha256")
+    NAME=$(echo "${VERIFY_ARCHES}" | jq -r ".[$i].verify")
+    URL=$(echo "${VERIFY_ARCHES}" | jq -r ".[$i].rootfs_url")
+    PIN=$(echo "${VERIFY_ARCHES}" | jq -r ".[$i].rootfs_sha256")
     i=$((i + 1))
 
     if [ -n "${ONLY_ARCH}" ] && [ "${NAME}" != "${ONLY_ARCH}" ]; then

@@ -31,6 +31,18 @@
 #      tuple + reason iff infeasible), `--validate` reports exactly 14
 #      families, and each of the 14 mnemonics is actually produced by some
 #      feasible row's tuple.
+#   7. S7a: `--with-ci` is verify:true-flag-driven, not "first row with a
+#      rootfs pin" -- a family with NO verify:true row is EXCLUDED from the
+#      view (not hard-failed: that's the S7b unverified tier), a family
+#      with a verify:true row gets exactly that row back (even when a
+#      SIBLING row in the same family also carries a rootfs pin -- the
+#      exact aarch64_cortex-a53-vs-aarch64_generic case S7a found), and
+#      `--validate` catches two authoring mistakes: a verify:true row
+#      lacking a real rootfs pin, and two verify:true rows in one family.
+#      Exercised against the REAL (now S7a-pinned) arches.json: exactly 10
+#      bootable families (A64/A7HF/M32BE/M32LE/M64BE/M64LE/X86SSE2/
+#      X86SOFT/AMD64/LOONG64), the other 4 (A6HF/ASOFT/M32LEHF/RV64)
+#      excluded.
 #
 # Usage: sh tests/apk/families.sh
 
@@ -41,17 +53,17 @@ REPO_ROOT=$(CDPATH= cd -- "${SCRIPT_DIR}/../.." && pwd)
 FAMILIES_SH="${REPO_ROOT}/scripts/families.sh"
 ARCHES_JSON="${REPO_ROOT}/arches.json"
 
-# S1b widened the real arches.json to the full 35-row Appendix table, but
-# left rootfs pinning for the 26 new `extended` rows to S7a (§5.8 -- the
-# widen must stay inert). That means most of the 14 families now have ZERO
-# rootfs-pinned rows in the live table, by design -- `--with-ci`'s own
-# invariant ("every family has exactly one bootable verify arch", enforced
-# since S1a) correctly hard-fails on that. The id-stability / one-verify-
-# per-family sections below are unit tests of `--with-ci`'s OWN properties
-# (order-independence, bootable-representative selection), not an assertion
-# that production data is S7a-complete -- so they exercise a frozen 4-row
-# fixture (the S1a-era table, one arch per family, every family bootable)
-# instead of the live, still-being-migrated arches.json.
+# S1b widened the real arches.json to the full 35-row Appendix table; S7a
+# then pinned rootfs images + set `verify: true` for the 10 CI-bootable
+# families (§5.6) -- 4 families (A6HF/ASOFT/M32LEHF/RV64) remain genuinely
+# unbootable (no generic rootfs exists upstream) and stay `verify: false`
+# on every row, so `--with-ci` excludes them (the S7b unverified tier). The
+# id-stability / one-verify-per-family sections below are unit tests of
+# `--with-ci`'s OWN properties (order-independence, verify:true-flag
+# selection over a fragile "first with a rootfs pin" inference) -- they
+# exercise a frozen 4-row fixture (one arch per family, every family
+# verify:true) so they stay independent of how many families the live
+# table happens to have pinned at any given time.
 FAMILIES_4ROW_FIXTURE="${SCRIPT_DIR}/fixtures/families-4row.json"
 
 # shellcheck source=tests/apk/lib.sh
@@ -218,7 +230,11 @@ echo "=== id-stability: adding a 2nd arch to an existing family leaves other fam
 
 # arm_cortex-a9 (bare) shares arm_cortex-a7's exact build tuple (arm/GOARM=5,
 # softfloat) -- same family, ASOFT (§4 Appendix) -- so this fixture adds a
-# genuine second member to an existing family, not a new one.
+# genuine second member to an existing family, not a new one. verify:false --
+# arm_cortex-a7 (already verify:true in the fixture) stays ASOFT's ONE
+# representative; a second verify:true row in the same family is a schema
+# violation (--with-ci hard-fails on it), not something this fixture means to
+# exercise.
 jq '. + [{
         "name": "arm_cortex-a9",
         "goarch": "arm", "goarm": "5", "gomips": "", "gomips64": "", "go386": "",
@@ -228,7 +244,8 @@ jq '. + [{
         "rootfs_url": "https://downloads.openwrt.org/releases/25.12.0/targets/armsr/armv7/openwrt-25.12.0-armsr-armv7-rootfs.tar.gz",
         "rootfs_sha256": "97bd0ac74bf7e9473162449932f7e336e509da467e5ce45d960716934f77e5ce",
         "container_arch": "armv7",
-        "tier": "core"
+        "tier": "core",
+        "verify": false
     }]' "${FAMILIES_4ROW_FIXTURE}" > "${WORKDIR}/added-arch.json"
 
 OTHER_FAMILIES_BEFORE=$("${FAMILIES_SH}" --with-ci "${FAMILIES_4ROW_FIXTURE}" | jq -S '[.[] | select(.family != "ASOFT")] | sort_by(.family)')
@@ -314,9 +331,8 @@ echo
 echo "=== widened table: each of the 14 mnemonics is produced by some feasible row ==="
 
 # Derive the family id for every FEASIBLE row's tuple directly via
-# --id-for (never --with-ci, which is rootfs-pin-gated and not yet
-# meaningful for the 10 not-core families until S7a pins their rootfs) and
-# collect the unique set.
+# --id-for (not --with-ci, which is verify:true-gated and by design omits
+# the 4 S7b-unverified families) and collect the unique set.
 #
 # NOTE: deliberately NOT `@tsv` + `IFS=<tab> read` -- tab is still
 # classified as "IFS whitespace" even when IFS is set to contain only a
@@ -343,5 +359,115 @@ for expected_family in A64 A7HF A6HF ASOFT M32BE M32LE M32LEHF M64BE M64LE X86SS
         log_fail "family ${expected_family} is NOT produced by any feasible row"
     fi
 done
+
+echo
+
+# --- 7. S7a: --with-ci is verify:true-driven against the REAL, now-pinned --
+# arches.json: exactly the 10 bootable families, the 4 unverified ones
+# excluded (not hard-failed), and the aarch64_cortex-a53/arm_cortex-a7
+# "sibling also carries a rootfs pin but isn't the true native match" case
+# resolves to the RIGHT representative. ------------------------------------
+
+echo "=== S7a: --with-ci on the real arches.json: exactly 10 bootable families ==="
+
+REAL_WITH_CI=$("${FAMILIES_SH}" --with-ci "${ARCHES_JSON}")
+REAL_WITH_CI_COUNT=$(echo "${REAL_WITH_CI}" | jq 'length')
+assert_eq "--with-ci emits 10 rows for the real (S7a-pinned) arches.json" "10" "${REAL_WITH_CI_COUNT}"
+
+EXPECTED_BOOTABLE='["A64","A7HF","AMD64","LOONG64","M32BE","M32LE","M64BE","M64LE","X86SOFT","X86SSE2"]'
+REAL_BOOTABLE_FAMILIES=$(echo "${REAL_WITH_CI}" | jq -c '[.[].family] | sort')
+assert_eq "the 10 emitted families are exactly the bootable set (RFC §5.6, X86SOFT resolved bootable)" \
+    "${EXPECTED_BOOTABLE}" "${REAL_BOOTABLE_FAMILIES}"
+
+for unverified_family in A6HF ASOFT M32LEHF RV64; do
+    PRESENT=$(echo "${REAL_WITH_CI}" | jq --arg f "${unverified_family}" '[.[] | select(.family == $f)] | length')
+    assert_eq "unverified family ${unverified_family} is excluded from --with-ci (S7b tier, not a hard-fail)" "0" "${PRESENT}"
+done
+
+echo
+
+echo "=== S7a: --with-ci resolves A64/A7HF to the TRUE native-match arch, not a sibling that merely carries a rootfs pin ==="
+
+# aarch64_cortex-a53 and arm_cortex-a7 both still carry a (legacy,
+# ipk_arches-scoped) rootfs pin, and "aarch64_cortex-a53" < "aarch64_generic"
+# lexicographically -- so a naive "first bootable candidate by name"
+# tie-break would have picked the WRONG (override-requiring) arch here.
+# This is a real regression guard, not a vacuous one: assert the precondition
+# (both rows in the family DO carry a rootfs pin) before asserting the
+# correct pick.
+A64_PINNED_COUNT=$(jq '[.[] | select(.goarch == "arm64") | select(.rootfs_url != null)] | length' "${ARCHES_JSON}")
+assert_eq "precondition: more than one A64 row carries a rootfs pin (aarch64_cortex-a53 AND aarch64_generic)" \
+    "true" "$([ "${A64_PINNED_COUNT}" -gt 1 ] && echo true || echo false)"
+
+A64_VERIFY=$(echo "${REAL_WITH_CI}" | jq -r '.[] | select(.family == "A64") | .verify')
+assert_eq "A64's --with-ci verify arch is aarch64_generic (the true native match), not aarch64_cortex-a53" \
+    "aarch64_generic" "${A64_VERIFY}"
+
+A7HF_VERIFY=$(echo "${REAL_WITH_CI}" | jq -r '.[] | select(.family == "A7HF") | .verify')
+assert_eq "A7HF's --with-ci verify arch is arm_cortex-a15_neon-vfpv4 (the true native match), not arm_cortex-a7" \
+    "arm_cortex-a15_neon-vfpv4" "${A7HF_VERIFY}"
+
+echo
+
+echo "=== S7a: every --with-ci row carries the build tuple + container_arch (what select-matrix --verify-families needs) ==="
+
+MISSING_FIELDS=$(echo "${REAL_WITH_CI}" | jq '[.[] | select(.container_arch == "" or .container_arch == null or .goarch == "" or .goarch == null)] | length')
+assert_eq "no --with-ci row is missing container_arch or goarch" "0" "${MISSING_FIELDS}"
+
+echo
+
+echo "=== S7a: --validate rejects an authored verify:true row with no rootfs pin ==="
+
+jq '(.[] | select(.name == "arm_cortex-a9") | .verify) |= true | (.[] | select(.name == "arm_cortex-a9") | .rootfs_target) |= null' \
+    "${ARCHES_JSON}" > "${WORKDIR}/bad-verify-no-rootfs.json"
+
+set +e
+"${FAMILIES_SH}" --validate "${WORKDIR}/bad-verify-no-rootfs.json" >"${WORKDIR}/bad-verify-no-rootfs.out" 2>&1
+BAD_VERIFY_NO_ROOTFS_RC=$?
+set -e
+
+if [ "${BAD_VERIFY_NO_ROOTFS_RC}" -ne 0 ]; then
+    log_info "OK: --validate rejects a verify:true row with no real rootfs pin"
+else
+    log_fail "--validate accepted a verify:true row with no rootfs pin:
+$(cat "${WORKDIR}/bad-verify-no-rootfs.out")"
+fi
+
+echo
+echo "=== S7a: --validate rejects two verify:true rows in the same family ==="
+
+# aarch64_cortex-a53 already carries a real rootfs pin (the legacy
+# ipk_arches one) and shares the A64 family with aarch64_generic (already
+# verify:true in the real table) -- flipping ITS verify to true too is a
+# genuine "two representatives for one family" authoring mistake.
+jq '(.[] | select(.name == "aarch64_cortex-a53") | .verify) |= true' \
+    "${ARCHES_JSON}" > "${WORKDIR}/dup-verify.json"
+
+set +e
+"${FAMILIES_SH}" --validate "${WORKDIR}/dup-verify.json" >"${WORKDIR}/dup-verify.out" 2>&1
+DUP_VERIFY_RC=$?
+set -e
+
+if [ "${DUP_VERIFY_RC}" -ne 0 ]; then
+    log_info "OK: --validate rejects a second verify:true row in the A64 family"
+else
+    log_fail "--validate accepted two verify:true rows in one family:
+$(cat "${WORKDIR}/dup-verify.out")"
+fi
+
+echo
+echo "=== S7a: --with-ci itself hard-fails (not silently picks one) on two verify:true rows in a family ==="
+
+set +e
+"${FAMILIES_SH}" --with-ci "${WORKDIR}/dup-verify.json" >"${WORKDIR}/dup-verify-withci.out" 2>&1
+DUP_VERIFY_WITHCI_RC=$?
+set -e
+
+if [ "${DUP_VERIFY_WITHCI_RC}" -ne 0 ]; then
+    log_info "OK: --with-ci hard-fails on two verify:true rows in one family"
+else
+    log_fail "--with-ci silently picked a representative despite two verify:true rows:
+$(cat "${WORKDIR}/dup-verify-withci.out")"
+fi
 
 harness_finish "tests/apk/families.sh"

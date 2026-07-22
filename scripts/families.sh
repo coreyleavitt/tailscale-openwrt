@@ -16,30 +16,49 @@
 #       addition to the case statement below, never a silent generic id.
 #
 #   families.sh --with-ci [arches.json]
-#       Emits one JSON row per family PRESENT in arches.json, each
-#       carrying that family's CI-boot representative (`verify`, an arch
-#       NAME string) + its rootfs pin (rootfs_target/rootfs_url/
-#       rootfs_sha256). This is a derived VIEW, not per-arch columns
-#       (round-2 D-SEV2) -- it is where the "exactly one verify arch per
-#       family, and it must itself be a bootable arch string" invariant is
-#       enforced (hard-fails if a family has no row carrying a real rootfs
-#       pin). "Bootable" is operationally defined, in the current schema,
-#       as "carries a non-empty rootfs_target/rootfs_url/rootfs_sha256" --
-#       the same fields tests/apk/rootfs.sh and qemu.sh already key off of
-#       to actually boot an arch under qemu.
+#       Emits one JSON row per BOOTABLE family present in arches.json (a
+#       family with at least one `verify: true` row) -- an UNVERIFIABLE
+#       family (S7a/RFC §5.6's S7b tier: A6HF/ASOFT/M32LEHF/RV64 today) is
+#       silently EXCLUDED, not a hard-fail. Each emitted row carries that
+#       family's CI-boot representative (`verify`, an arch NAME string),
+#       its rootfs pin (rootfs_target/rootfs_url/rootfs_sha256), and its
+#       container_arch + build tuple (goarch/goarm/gomips/gomips64/go386),
+#       so a caller (scripts/select-matrix.sh --verify-families) never
+#       needs a second arches.json lookup to get the full row.
 #
-#       If more than one row in a family carries a rootfs pin, the
-#       lexicographically-first arch NAME is the deterministic tie-break
-#       (content-derived, not row-order-derived) -- S1a's 4-row table never
-#       exercises this (1 arch per family today); S1b's widen may.
+#       "Bootable representative" is an AUTHORED per-arch fact (round-2
+#       D-SEV2 lives on, S7a sharpens it): each arch row carries its own
+#       `verify` boolean, true on at most one row per family -- the one
+#       arch string whose PINNED ROOTFS's OWN native /etc/apk/arch
+#       genuinely reports that exact name (empirically confirmed per
+#       family, not inferred). This is deliberately NOT "any row that
+#       merely carries a rootfs pin, lexicographically-first": S7a found a
+#       real case where that inference is wrong -- aarch64_cortex-a53 and
+#       arm_cortex-a7 (the historical core arches) both still carry a
+#       rootfs pin (needed by the ipk_arches-scoped legacy tests), but
+#       their pinned rootfs's native /etc/apk/arch is aarch64_generic /
+#       arm_cortex-a15_neon-vfpv4 respectively (a DIFFERENT arch string,
+#       one hardfloat family over for the ARM case) -- so those two rows
+#       carry `verify: false`, and the true representative is a sibling row
+#       instead. Trusting "first with a rootfs pin" here would have silently
+#       re-introduced the exact /etc/apk/arch-override mismatch bug S7a's
+#       D2 removes from the verify path.
+#
+#       Hard-fails (schema violation, not a normal "unverified" case) if a
+#       single family has MORE than one `verify: true` row, or if a
+#       `verify: true` row does not itself carry a real rootfs pin.
 #
 #   families.sh --validate [arches.json]
 #       The schema guard (round-2 P-SEV3): every row's build tuple must
 #       map to a known family id (via --id-for; hard-fails on unmapped,
 #       naming the offending arch), and goarch/float/endian/gomips/
-#       gomips64/go386/tier must each be one of a fixed vocabulary. Prints
-#       one FAIL line per violation and exits non-zero if any are found;
-#       otherwise prints a one-line OK summary and exits 0.
+#       gomips64/go386/tier must each be one of a fixed vocabulary. S7a
+#       adds: `verify` must be boolean; a `verify: true` row must itself
+#       carry a real rootfs pin (an authored mistake -- marking a
+#       non-bootable row as the representative -- is a schema error, not a
+#       silent no-op); and no family may have more than one `verify: true`
+#       row. Prints one FAIL line per violation and exits non-zero if any
+#       are found; otherwise prints a one-line OK summary and exits 0.
 #
 # POSIX sh only (mirrors scripts/select-matrix.sh's style/no-bashisms).
 #
@@ -141,6 +160,8 @@ cmd_with_ci() {
         _rootfs_target=$(echo "${_row}" | jq -r '.rootfs_target // ""')
         _rootfs_url=$(echo "${_row}" | jq -r '.rootfs_url // ""')
         _rootfs_sha256=$(echo "${_row}" | jq -r '.rootfs_sha256 // ""')
+        _container_arch=$(echo "${_row}" | jq -r '.container_arch // ""')
+        _verify=$(echo "${_row}" | jq -r '.verify // false')
 
         _bootable="false"
         if [ -n "${_rootfs_target}" ] && [ -n "${_rootfs_url}" ] && [ -n "${_rootfs_sha256}" ]; then
@@ -151,31 +172,51 @@ cmd_with_ci() {
             --arg family "${_family}" \
             --arg name "${_name}" \
             --arg bootable "${_bootable}" \
+            --arg verify "${_verify}" \
             --arg rootfs_target "${_rootfs_target}" \
             --arg rootfs_url "${_rootfs_url}" \
             --arg rootfs_sha256 "${_rootfs_sha256}" \
+            --arg container_arch "${_container_arch}" \
+            --arg goarch "${_goarch}" \
+            --arg goarm "${_goarm}" \
+            --arg gomips "${_gomips}" \
+            --arg gomips64 "${_gomips64}" \
+            --arg go386 "${_go386}" \
             '{family: $family, name: $name, bootable: ($bootable == "true"),
-              rootfs_target: $rootfs_target, rootfs_url: $rootfs_url, rootfs_sha256: $rootfs_sha256}' \
+              verify_flag: ($verify == "true"),
+              rootfs_target: $rootfs_target, rootfs_url: $rootfs_url, rootfs_sha256: $rootfs_sha256,
+              container_arch: $container_arch,
+              goarch: $goarch, goarm: $goarm, gomips: $gomips, gomips64: $gomips64, go386: $go386}' \
             >> "${_rows_file}"
     done
 
-    # Group the per-arch rows by family; within each family, the
-    # verify/rootfs representative is the lexicographically-first
-    # bootable-candidate arch name (deterministic, content-derived --
-    # never row-order-derived). Hard-fail if a family has NO bootable
-    # candidate at all: --with-ci's whole point is to hand back something
-    # CI can actually boot.
+    # Group the per-arch rows by family. The verify representative is the
+    # row an author explicitly marked `verify: true` (round-2 D-SEV2
+    # sharpened by S7a -- see the header comment for why "any bootable
+    # row, first by name" is the wrong inference). Hard-fail (schema
+    # violation) if a family has MORE than one verify:true row, or if its
+    # verify:true row is not itself bootable (an authored mistake). A
+    # family with ZERO verify:true rows is not an error -- it is the S7b
+    # "unverified" tier -- so it is simply excluded from this view's
+    # output, not hard-failed.
     jq -s '
         group_by(.family)
         | map(
             . as $rows
             | ($rows[0].family) as $family
-            | ([$rows[] | select(.bootable)] | sort_by(.name)) as $candidates
-            | if ($candidates | length) == 0
-              then error("families.sh --with-ci: family " + $family + " has no bootable rootfs-pinned arch")
-              else $candidates[0] as $v
-                | {family: $family, verify: $v.name,
-                   rootfs_target: $v.rootfs_target, rootfs_url: $v.rootfs_url, rootfs_sha256: $v.rootfs_sha256}
+            | ([$rows[] | select(.verify_flag)]) as $marked
+            | if ($marked | length) > 1
+              then error("families.sh --with-ci: family " + $family + " has more than one verify:true arch (" + ([$marked[].name] | join(", ")) + ")")
+              elif ($marked | length) == 0
+              then empty
+              else $marked[0] as $v
+                | if ($v.bootable | not)
+                  then error("families.sh --with-ci: family " + $family + "'"'"'s verify:true arch (" + $v.name + ") does not carry a real rootfs pin")
+                  else {family: $family, verify: $v.name,
+                        rootfs_target: $v.rootfs_target, rootfs_url: $v.rootfs_url, rootfs_sha256: $v.rootfs_sha256,
+                        container_arch: $v.container_arch,
+                        goarch: $v.goarch, goarm: $v.goarm, gomips: $v.gomips, gomips64: $v.gomips64, go386: $v.go386}
+                  end
               end
           )
         | sort_by(.family)
@@ -194,7 +235,8 @@ cmd_validate() {
     _i=0
     _errfile=$(mktemp)
     _familiesfile=$(mktemp)
-    trap 'rm -f "${_errfile}" "${_familiesfile}"' EXIT
+    _verifyfamiliesfile=$(mktemp)
+    trap 'rm -f "${_errfile}" "${_familiesfile}" "${_verifyfamiliesfile}"' EXIT
 
     while [ "${_i}" -lt "${_count}" ]; do
         _row=$(jq -c ".[${_i}]" "${_arches_json}")
@@ -213,6 +255,10 @@ cmd_validate() {
         _endian=$(echo "${_row}" | jq -r '.endian // ""')
         _float=$(echo "${_row}" | jq -r '.float // ""')
         _tier=$(echo "${_row}" | jq -r '.tier // ""')
+        _verify_type=$(echo "${_row}" | jq -r '.verify | type')
+        _rootfs_target=$(echo "${_row}" | jq -r '.rootfs_target // ""')
+        _rootfs_url=$(echo "${_row}" | jq -r '.rootfs_url // ""')
+        _rootfs_sha256=$(echo "${_row}" | jq -r '.rootfs_sha256 // ""')
 
         # `tier == infeasible` rows (reason != null) are deliberately built
         # from a blank tuple (goarch/goarm/gomips/gomips64/go386 all "") --
@@ -278,15 +324,54 @@ cmd_validate() {
                 ;;
         esac
 
+        # S7a: `verify` must be an authored boolean (not null/absent/a
+        # string) -- a missing field would silently read as "not verify"
+        # via --with-ci's `// false`, masking a forgotten field on a new
+        # row. A `verify: true` row that lacks a real rootfs pin is an
+        # authored contradiction (marking a non-bootable row as THE
+        # bootable representative) -- caught here, not left to
+        # --with-ci's own (looser, per-invocation) hard-fail.
+        case "${_verify_type}" in
+            boolean) ;;
+            *)
+                echo "FAIL: ${_name}: verify '${_verify_type}' is not a boolean" >&2
+                _fail=1
+                ;;
+        esac
+
+        if [ "${_verify_type}" = "boolean" ] && [ "$(echo "${_row}" | jq -r '.verify')" = "true" ]; then
+            if [ -z "${_rootfs_target}" ] || [ -z "${_rootfs_url}" ] || [ -z "${_rootfs_sha256}" ]; then
+                echo "FAIL: ${_name}: verify:true but missing a real rootfs pin (rootfs_target/rootfs_url/rootfs_sha256)" >&2
+                _fail=1
+            fi
+        fi
+
         if [ "${_tier}" = "infeasible" ]; then
             : # no tuple to map -- infeasible rows have no family (Appendix)
         elif _family=$(id_for "${_goarch}" "${_goarm}" "${_gomips}" "${_gomips64}" "${_go386}" 2>"${_errfile}"); then
             echo "${_family}" >> "${_familiesfile}"
+            if [ "${_verify_type}" = "boolean" ] && [ "$(echo "${_row}" | jq -r '.verify')" = "true" ]; then
+                echo "${_family}" >> "${_verifyfamiliesfile}"
+            fi
         else
             echo "FAIL: ${_name}: $(cat "${_errfile}")" >&2
             _fail=1
         fi
     done
+
+    # S7a: at most one verify:true row per family -- two representatives
+    # for the same family is the exact ambiguity --with-ci's own hard-fail
+    # guards at read time; catching it here too gives a faster, more
+    # specific diagnostic (names the family) during routine validation.
+    if [ -s "${_verifyfamiliesfile}" ]; then
+        _dup_families=$(sort "${_verifyfamiliesfile}" | uniq -d)
+        if [ -n "${_dup_families}" ]; then
+            for _dupfam in ${_dup_families}; do
+                echo "FAIL: family ${_dupfam} has more than one verify:true row" >&2
+            done
+            _fail=1
+        fi
+    fi
 
     # Schema guard (round-2 P-SEV3): the feasible rows (core + extended --
     # everything with a real, mapped tuple) must group into EXACTLY the 14

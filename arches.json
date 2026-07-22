@@ -14,7 +14,8 @@
     "rootfs_url": "https://downloads.openwrt.org/releases/25.12.0/targets/armsr/armv8/openwrt-25.12.0-armsr-armv8-rootfs.tar.gz",
     "rootfs_sha256": "d5e42b396d7f64697c65a884912107b49e05d2b2f2c00a251f94c44f8deef507",
     "container_arch": "aarch64",
-    "tier": "core"
+    "tier": "core",
+    "verify": false
   },
   {
     "name": "arm_cortex-a7",
@@ -31,7 +32,8 @@
     "rootfs_url": "https://downloads.openwrt.org/releases/25.12.0/targets/armsr/armv7/openwrt-25.12.0-armsr-armv7-rootfs.tar.gz",
     "rootfs_sha256": "97bd0ac74bf7e9473162449932f7e336e509da467e5ce45d960716934f77e5ce",
     "container_arch": "armv7",
-    "tier": "core"
+    "tier": "core",
+    "verify": false
   },
   {
     "name": "mips_24kc",
@@ -48,7 +50,8 @@
     "rootfs_url": "https://downloads.openwrt.org/releases/25.12.0/targets/malta/be/openwrt-25.12.0-malta-be-default-rootfs.tar.gz",
     "rootfs_sha256": "89830656217c4d1412dc1b3d4789659f272dd17823ce0bffa484274e11e5b0eb",
     "container_arch": "mips",
-    "tier": "core"
+    "tier": "core",
+    "verify": true
   },
   {
     "name": "mipsel_24kc",
@@ -65,7 +68,8 @@
     "rootfs_url": "https://downloads.openwrt.org/releases/25.12.0/targets/malta/le/openwrt-25.12.0-malta-le-default-rootfs.tar.gz",
     "rootfs_sha256": "c7a8be40886de896affc5606befd99cc2014c11e6ae6594762242ed3f56e0b29",
     "container_arch": "mipsel",
-    "tier": "core"
+    "tier": "core",
+    "verify": true
   },
   {
     "name": "aarch64_generic",
@@ -77,12 +81,13 @@
     "endian": "little",
     "float": "hard",
     "reason": null,
-    "rootfs_target": null,
+    "rootfs_target": "armsr/armv8",
     "canary": false,
-    "rootfs_url": null,
-    "rootfs_sha256": null,
-    "container_arch": null,
-    "tier": "extended"
+    "rootfs_url": "https://downloads.openwrt.org/releases/25.12.0/targets/armsr/armv8/openwrt-25.12.0-armsr-armv8-rootfs.tar.gz",
+    "rootfs_sha256": "d5e42b396d7f64697c65a884912107b49e05d2b2f2c00a251f94c44f8deef507",
+    "container_arch": "aarch64",
+    "tier": "extended",
+    "verify": true
   },
   {
     "name": "aarch64_cortex-a72",
@@ -99,7 +104,8 @@
     "rootfs_url": null,
     "rootfs_sha256": null,
     "container_arch": null,
-    "tier": "extended"
+    "tier": "extended",
+    "verify": false
   },
   {
     "name": "aarch64_cortex-a76",
@@ -116,7 +122,8 @@
     "rootfs_url": null,
     "rootfs_sha256": null,
     "container_arch": null,
-    "tier": "extended"
+    "tier": "extended",
+    "verify": false
   },
   {
     "name": "arm_cortex-a5_vfpv4",
@@ -133,7 +140,8 @@
     "rootfs_url": null,
     "rootfs_sha256": null,
     "container_arch": null,
-    "tier": "extended"
+    "tier": "extended",
+    "verify": false
   },
   {
     "name": "arm_cortex-a7_vfpv4",
@@ -150,7 +158,8 @@
     "rootfs_url": null,
     "rootfs_sha256": null,
     "container_arch": null,
-    "tier": "extended"
+    "tier": "extended",
+    "verify": false
   },
   {
     "name": "arm_cortex-a7_neon-vfpv4",
@@ -167,7 +176,8 @@
     "rootfs_url": null,
     "rootfs_sha256": null,
     "container_arch": null,
-    "tier": "extended"
+    "tier": "extended",
+    "verify": false
   },
   {
     "name": "arm_cortex-a8_vfpv3",
@@ -184,7 +194,8 @@
     "rootfs_url": null,
     "rootfs_sha256": null,
     "container_arch": null,
-    "tier": "extended"
+    "tier": "extended",
+    "verify": false
   },
   {
     "name": "arm_cortex-a9_neon",
@@ -201,7 +212,8 @@
     "rootfs_url": null,
     "rootfs_sha256": null,
     "container_arch": null,
-    "tier": "extended"
+    "tier": "extended",
+    "verify": false
   },
   {
     "name": "arm_cortex-a9_vfpv3-d16",
@@ -218,7 +230,8 @@
     "rootfs_url": null,
     "rootfs_sha256": null,
     "container_arch": null,
-    "tier": "extended"
+    "tier": "extended",
+    "verify": false
   },
   {
     "name": "arm_cortex-a15_neon-vfpv4",
@@ -230,12 +243,13 @@
     "endian": "little",
     "float": "hard",
     "reason": null,
-    "rootfs_target": null,
+    "rootfs_target": "armsr/armv7",
     "canary": false,
-    "rootfs_url": null,
-    "rootfs_sha256": null,
-    "container_arch": null,
-    "tier": "extended"
+    "rootfs_url": "https://downloads.openwrt.org/releases/25.12.0/targets/armsr/armv7/openwrt-25.12.0-armsr-armv7-rootfs.tar.gz",
+    "rootfs_sha256": "97bd0ac74bf7e9473162449932f7e336e509da467e5ce45d960716934f77e5ce",
+    "container_arch": "armv7",
+    "tier": "extended",
+    "verify": true
   },
   {
     "name": "arm_arm1176jzf-s_vfp",
@@ -252,7 +266,8 @@
     "rootfs_url": null,
     "rootfs_sha256": null,
     "container_arch": null,
-    "tier": "extended"
+    "tier": "extended",
+    "verify": false
   },
   {
     "name": "arm_cortex-a9",
@@ -269,7 +284,8 @@
     "rootfs_url": null,
     "rootfs_sha256": null,
     "container_arch": null,
-    "tier": "extended"
+    "tier": "extended",
+    "verify": false
   },
   {
     "name": "arm_arm926ej-s",
@@ -286,7 +302,8 @@
     "rootfs_url": null,
     "rootfs_sha256": null,
     "container_arch": null,
-    "tier": "extended"
+    "tier": "extended",
+    "verify": false
   },
   {
     "name": "arm_xscale",
@@ -303,7 +320,8 @@
     "rootfs_url": null,
     "rootfs_sha256": null,
     "container_arch": null,
-    "tier": "extended"
+    "tier": "extended",
+    "verify": false
   },
   {
     "name": "mips_mips32",
@@ -320,7 +338,8 @@
     "rootfs_url": null,
     "rootfs_sha256": null,
     "container_arch": null,
-    "tier": "extended"
+    "tier": "extended",
+    "verify": false
   },
   {
     "name": "mipsel_74kc",
@@ -337,7 +356,8 @@
     "rootfs_url": null,
     "rootfs_sha256": null,
     "container_arch": null,
-    "tier": "extended"
+    "tier": "extended",
+    "verify": false
   },
   {
     "name": "mipsel_mips32",
@@ -354,7 +374,8 @@
     "rootfs_url": null,
     "rootfs_sha256": null,
     "container_arch": null,
-    "tier": "extended"
+    "tier": "extended",
+    "verify": false
   },
   {
     "name": "mipsel_24kc_24kf",
@@ -371,7 +392,8 @@
     "rootfs_url": null,
     "rootfs_sha256": null,
     "container_arch": null,
-    "tier": "extended"
+    "tier": "extended",
+    "verify": false
   },
   {
     "name": "mips64_mips64r2",
@@ -383,12 +405,13 @@
     "endian": "big",
     "float": "hard",
     "reason": null,
-    "rootfs_target": null,
+    "rootfs_target": "malta/be64",
     "canary": false,
-    "rootfs_url": null,
-    "rootfs_sha256": null,
-    "container_arch": null,
-    "tier": "extended"
+    "rootfs_url": "https://downloads.openwrt.org/releases/25.12.0/targets/malta/be64/openwrt-25.12.0-malta-be64-default-rootfs.tar.gz",
+    "rootfs_sha256": "93dc6a368d4f8b9da9f6a58a480293055df9b00292969da5f730d1526825b601",
+    "container_arch": "mips64",
+    "tier": "extended",
+    "verify": true
   },
   {
     "name": "mips64_octeonplus",
@@ -405,7 +428,8 @@
     "rootfs_url": null,
     "rootfs_sha256": null,
     "container_arch": null,
-    "tier": "extended"
+    "tier": "extended",
+    "verify": false
   },
   {
     "name": "mips64el_mips64r2",
@@ -417,12 +441,13 @@
     "endian": "little",
     "float": "hard",
     "reason": null,
-    "rootfs_target": null,
+    "rootfs_target": "malta/le64",
     "canary": false,
-    "rootfs_url": null,
-    "rootfs_sha256": null,
-    "container_arch": null,
-    "tier": "extended"
+    "rootfs_url": "https://downloads.openwrt.org/releases/25.12.0/targets/malta/le64/openwrt-25.12.0-malta-le64-default-rootfs.tar.gz",
+    "rootfs_sha256": "59d2f0204d7f988749a38d0f2c4adb63f61bd632643ac3f96f6c5b4dc67a1578",
+    "container_arch": "mips64el",
+    "tier": "extended",
+    "verify": true
   },
   {
     "name": "i386_pentium4",
@@ -434,12 +459,13 @@
     "endian": "little",
     "float": "hard",
     "reason": null,
-    "rootfs_target": null,
+    "rootfs_target": "x86/generic",
     "canary": false,
-    "rootfs_url": null,
-    "rootfs_sha256": null,
-    "container_arch": null,
-    "tier": "extended"
+    "rootfs_url": "https://downloads.openwrt.org/releases/25.12.0/targets/x86/generic/openwrt-25.12.0-x86-generic-rootfs.tar.gz",
+    "rootfs_sha256": "5cc8071fb2af6d8281eb5782c39234ba522477188f92bf08f4c9a1f2791bd5a7",
+    "container_arch": "x86",
+    "tier": "extended",
+    "verify": true
   },
   {
     "name": "i386_pentium-mmx",
@@ -451,12 +477,13 @@
     "endian": "little",
     "float": "soft",
     "reason": null,
-    "rootfs_target": null,
+    "rootfs_target": "x86/legacy",
     "canary": false,
-    "rootfs_url": null,
-    "rootfs_sha256": null,
-    "container_arch": null,
-    "tier": "extended"
+    "rootfs_url": "https://downloads.openwrt.org/releases/25.12.0/targets/x86/legacy/openwrt-25.12.0-x86-legacy-rootfs.tar.gz",
+    "rootfs_sha256": "dfdfc8d1ceeed978e4060227bf06a163c2d4755d7586f849c48d01730d127df5",
+    "container_arch": "x86",
+    "tier": "extended",
+    "verify": true
   },
   {
     "name": "x86_64",
@@ -468,12 +495,13 @@
     "endian": "little",
     "float": "hard",
     "reason": null,
-    "rootfs_target": null,
+    "rootfs_target": "x86/64",
     "canary": false,
-    "rootfs_url": null,
-    "rootfs_sha256": null,
-    "container_arch": null,
-    "tier": "extended"
+    "rootfs_url": "https://downloads.openwrt.org/releases/25.12.0/targets/x86/64/openwrt-25.12.0-x86-64-rootfs.tar.gz",
+    "rootfs_sha256": "11c2f26b9d48c02cbdb3b63d499e1f6413ed62bcdbbea78937b12279b95acb1e",
+    "container_arch": "x86_64",
+    "tier": "extended",
+    "verify": true
   },
   {
     "name": "riscv64_generic",
@@ -490,7 +518,8 @@
     "rootfs_url": null,
     "rootfs_sha256": null,
     "container_arch": null,
-    "tier": "extended"
+    "tier": "extended",
+    "verify": false
   },
   {
     "name": "loongarch64_generic",
@@ -502,12 +531,13 @@
     "endian": "little",
     "float": "hard",
     "reason": null,
-    "rootfs_target": null,
+    "rootfs_target": "loongarch64/generic",
     "canary": false,
-    "rootfs_url": null,
-    "rootfs_sha256": null,
-    "container_arch": null,
-    "tier": "extended"
+    "rootfs_url": "https://downloads.openwrt.org/releases/25.12.0/targets/loongarch64/generic/openwrt-25.12.0-loongarch64-generic-rootfs.tar.gz",
+    "rootfs_sha256": "b73d27cd6f9499f854c8d0213e80f4401b7a7eaa3833b6b2b76190559175fa55",
+    "container_arch": "loongarch64",
+    "tier": "extended",
+    "verify": true
   },
   {
     "name": "arm_fa526",
@@ -524,7 +554,8 @@
     "rootfs_url": null,
     "rootfs_sha256": null,
     "container_arch": null,
-    "tier": "infeasible"
+    "tier": "infeasible",
+    "verify": false
   },
   {
     "name": "armeb_xscale",
@@ -541,7 +572,8 @@
     "rootfs_url": null,
     "rootfs_sha256": null,
     "container_arch": null,
-    "tier": "infeasible"
+    "tier": "infeasible",
+    "verify": false
   },
   {
     "name": "powerpc_8548",
@@ -558,7 +590,8 @@
     "rootfs_url": null,
     "rootfs_sha256": null,
     "container_arch": null,
-    "tier": "infeasible"
+    "tier": "infeasible",
+    "verify": false
   },
   {
     "name": "powerpc_464fp",
@@ -575,7 +608,8 @@
     "rootfs_url": null,
     "rootfs_sha256": null,
     "container_arch": null,
-    "tier": "infeasible"
+    "tier": "infeasible",
+    "verify": false
   },
   {
     "name": "powerpc64_e5500",
@@ -592,6 +626,7 @@
     "rootfs_url": null,
     "rootfs_sha256": null,
     "container_arch": null,
-    "tier": "infeasible"
+    "tier": "infeasible",
+    "verify": false
   }
 ]

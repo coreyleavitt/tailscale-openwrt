@@ -69,6 +69,7 @@ jobs:
       ipk_arches: ${{ steps.select.outputs.ipk_arches }}
       compile_families: ${{ steps.select.outputs.compile_families }}
       publish_arches: ${{ steps.select.outputs.publish_arches }}
+      verify_families: ${{ steps.select.outputs.verify_families }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -82,11 +83,12 @@ jobs:
           # empty matrix that silently skips every build job and half-publishes
           # a keys-only feed). Fail loudly on error or an empty/invalid matrix.
           #
-          # S1.5/S5a multi-output contract (RFC §5.3/§5.8): three
+          # S1.5/S5a/S7a multi-output contract (RFC §5.3/§5.8/§5.6): four
           # independently-gated named outputs -- ipk_arches NEVER widens
           # (ipk non-goal); compile_families/publish_arches are the S5a GATE
           # FLIP (core-only filter dropped, every feasible arch/family now
-          # goes live) -- see scripts/select-matrix.sh's own header comment.
+          # goes live); verify_families is S7a's CI-boot representative set
+          # -- see scripts/select-matrix.sh's own header comment.
           ipk_arches="$(scripts/select-matrix.sh "${{ github.event_name }}" --ipk-arches)"
           echo "${ipk_arches}" | jq -e 'type == "array" and length > 0' >/dev/null \
             || { echo "::error::select-matrix --ipk-arches produced an empty or invalid matrix: '${ipk_arches}'"; exit 1; }
@@ -106,15 +108,34 @@ jobs:
             || { echo "::error::select-matrix --publish-arches produced an empty or invalid matrix: '${publish_arches}'"; exit 1; }
           echo "publish_arches=${publish_arches}" >> "$GITHUB_OUTPUT"
 
-  # A5a: qemu binfmt registration + foreign-arch exec smoke test. Proves
+          # S7a (RFC §5.6): one row per CI-bootable family (10 today --
+          # A6HF/ASOFT/M32LEHF/RV64 have no generic rootfs upstream and are
+          # excluded, the S7b unverified tier). PR: canary's family only.
+          verify_families="$(scripts/select-matrix.sh "${{ github.event_name }}" --verify-families)"
+          echo "${verify_families}" | jq -e 'type == "array" and length > 0' >/dev/null \
+            || { echo "::error::select-matrix --verify-families produced an empty or invalid matrix: '${verify_families}'"; exit 1; }
+          echo "verify_families=${verify_families}" >> "$GITHUB_OUTPUT"
+
+  # A5a/S7a: qemu binfmt registration + foreign-arch exec smoke test. Proves
   # docker/setup-qemu-action's standard registration PLUS the custom
   # ABIVERSION-wildcarded 32-bit mips/mipsel binfmt_misc entries (root-caused
   # in A0; stock registration omits 32-bit MIPS and rejects OpenWrt's
   # EI_ABIVERSION=1 musl-softfloat ELFs) actually let each arch's rootfs
   # container exec. Runs tests/apk/qemu.sh scoped to a single arch per
-  # matrix job, reusing the same script used for local `/tdd` runs. A5b
-  # wires the real per-arch apk build/install pipeline onto this same
-  # event-conditional matrix.
+  # matrix job, reusing the same script used for local `/tdd` runs.
+  #
+  # S7a (RFC §5.6) widens the matrix from ipk_arches (the 4 historical
+  # tier==core arches) to verify_families -- the 10 CI-bootable family
+  # representatives (event-conditional: PR = canary's family only, release/
+  # dispatch = all 10; A6HF/ASOFT/M32LEHF/RV64 have no generic upstream
+  # rootfs and are excluded, the S7b unverified tier). `matrix.family.verify`
+  # is the arch NAME field (families.sh --with-ci's own naming -- a
+  # verify_families row is NOT shaped like an ipk_arches row). loong64 needs
+  # no extra binfmt step here: docker/setup-qemu-action@v3 (tonistiigi/binfmt)
+  # registers qemu-loongarch64 out of the box (S7a M3 spike, confirmed
+  # empirically) -- only 32-bit MIPS needs the custom ABIVERSION wildcard
+  # (M2 spike: 64-bit mips64/mips64le need NO such workaround, confirmed
+  # empirically against the standard registration).
   qemu-verify:
     if: github.event.inputs.republish != 'true'
     needs: select-matrix
@@ -125,12 +146,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # S5a: qemu-verify is a CI-verification job, not a publish-set
-        # consumer -- kept scoped to ipk_arches (the historical/core set,
-        # unaffected by the compile_families/publish_arches gate-flip).
-        # Widening CI verification itself to the full feasible set is S7a's
-        # job (native-arch qemu verify, event-conditional), out of scope here.
-        arch: ${{ fromJson(needs.select-matrix.outputs.ipk_arches) }}
+        family: ${{ fromJson(needs.select-matrix.outputs.verify_families) }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -143,24 +159,56 @@ jobs:
           . tests/apk/lib.sh
           register_openwrt_mips_binfmt
 
-      - name: Exec smoke test (${{ matrix.arch.name }})
+      - name: Exec smoke test (${{ matrix.family.verify }})
         env:
           QEMU_SKIP_BINFMT_SETUP: '1'
-        run: sh tests/apk/qemu.sh "${{ matrix.arch.name }}"
+        run: sh tests/apk/qemu.sh "${{ matrix.family.verify }}"
+
+  # S7a D3/D5 (RFC §5.6): the FPU-SIGILL spike, CONFIRMED (S7a handoff) --
+  # qemu-arm (tonistiigi/binfmt's build, the same one docker/setup-qemu-
+  # action@v3 registers) cleanly SIGILLs a wrongly-hardfloat ARM binary on
+  # an FPU-less CPU model, so the softfloat assignments this repo depends on
+  # (bare arm_cortex-a7/-a9 -> GOARM=5, the live §9 bug fix) are actually
+  # regression-guarded. Standalone (not matrixed): this proves qemu's OWN
+  # capability, independent of any specific verify_families arch, so it runs
+  # once. Not gated on select-matrix's output at all (no arches.json
+  # dependency), so it has no `needs:`.
+  fpu-sigill-smoke:
+    if: github.event.inputs.republish != 'true'
+    runs-on: ubuntu-latest
+    # M11: least-privilege -- checkout only, nothing else.
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: FPU-SIGILL smoke (spike proof)
+        env:
+          FPU_SIGILL_SMOKE: '1'
+        run: sh tests/apk/fpu-sigill-smoke.sh
 
   # A5b: the real per-arch apk build + install-verify pipeline (RFC
-  # docs/rfc-apk-builds.md §6 slice A5b), on the same event-conditional
-  # matrix as qemu-verify above (release/dispatch = full 4 arches, PR =
-  # canary + aarch64 only, per §5's emulation-cost policy). Sibling job, not
-  # a step inside qemu-verify -- qemu-verify stays a cheap binfmt/exec smoke
-  # test; this job does the heavier work (a real compile-family-then-package-
-  # host-side build -- RFC docs/rfc-apk-arch-coverage.md §5.1/S4:
-  # `docker build --target build` + scripts/package-apk.sh, the `apk`
-  # Dockerfile stage this used to build via `--target apk` was deleted -- +
-  # a real qemu-emulated `apk add` + `tailscaled --version`) via
-  # tests/apk/install.sh scoped to one arch, mirroring how qemu.sh is
-  # invoked per-arch above. Purely additive: does not feed the existing
-  # ipk build/release jobs below.
+  # docs/rfc-apk-builds.md §6 slice A5b), on the ipk_arches event-conditional
+  # matrix (release/dispatch = full 4 arches, PR = canary + aarch64 only, per
+  # §5's emulation-cost policy). Sibling job, not a step inside qemu-verify --
+  # qemu-verify stays a cheap binfmt/exec smoke test; this job does the
+  # heavier work (a real compile-family-then-package-host-side build -- RFC
+  # docs/rfc-apk-arch-coverage.md §5.1/S4: `docker build --target build` +
+  # scripts/package-apk.sh + a real qemu-emulated `apk add` +
+  # `tailscaled --version`).
+  #
+  # DELIBERATELY STAYS on ipk_arches + the multi-arch `/etc/apk/arch`
+  # OVERRIDE (tests/apk/install.sh's default behavior, unchanged) -- RFC
+  # §5.6/S7a's D2 note: "keep existing multi-arch install coverage that
+  # genuinely needs the override in a clearly separate, named path".
+  # aarch64_cortex-a53/arm_cortex-a7 (2 of these 4 arches) are NOT their own
+  # family's true native-match arch (families.sh --with-ci resolves A64/
+  # ASOFT's true representative to aarch64_generic / a DIFFERENT,
+  # not-this-family arch respectively) -- widening this job to
+  # verify_families instead would silently DROP install-verify coverage for
+  # the actual production core arches. apk-native-verify below is the
+  # separate, S7a-native path.
   apk-install-verify:
     if: github.event.inputs.republish != 'true'
     needs: select-matrix
@@ -171,8 +219,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # S5a: same scoping rationale as qemu-verify above -- ipk_arches
-        # (unaffected by the gate-flip); widening is S7a's job.
+        # S5a: same scoping rationale as qemu-verify's PRE-S7a shape --
+        # ipk_arches (unaffected by the gate-flip). See the job comment
+        # above for why this deliberately does NOT move to verify_families.
         arch: ${{ fromJson(needs.select-matrix.outputs.ipk_arches) }}
     steps:
       - name: Checkout
@@ -188,6 +237,44 @@ jobs:
 
       - name: Build + install-verify .apk (${{ matrix.arch.name }})
         run: sh tests/apk/install.sh "${{ matrix.arch.name }}"
+
+  # S7a (RFC §5.6, D2): the NATIVE-arch install-verify path -- matrixed over
+  # verify_families (the 10 CI-bootable family representatives, event-
+  # conditional exactly like qemu-verify above), with INSTALL_NATIVE_ONLY=1
+  # so tests/apk/install.sh asserts the container's OWN, un-mutated
+  # `/etc/apk/arch` already matches (no override appended). This is the job
+  # that actually exercises "does a stock device of this exact arch string
+  # trust-match our signed package" -- apk-install-verify above proves
+  # install MECHANICS via the override; this job proves the ARCH STRING
+  # ITSELF is correct, which is what originally hid the arm_cortex-a7-vs-
+  # armsr/armv7 mismatch (RFC §5.6's whole reason for existing).
+  apk-native-verify:
+    if: github.event.inputs.republish != 'true'
+    needs: select-matrix
+    runs-on: ubuntu-latest
+    # M11: least-privilege -- checkout only, nothing else.
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        family: ${{ fromJson(needs.select-matrix.outputs.verify_families) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU (standard arches)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Register OpenWrt 32-bit MIPS binfmt entries
+        run: |
+          . tests/apk/lib.sh
+          register_openwrt_mips_binfmt
+
+      - name: Build + native-arch install-verify .apk (${{ matrix.family.verify }})
+        env:
+          INSTALL_NATIVE_ONLY: '1'
+        run: sh tests/apk/install.sh "${{ matrix.family.verify }}"
 
   # C1a (RFC docs/rfc-apk-builds.md §6): single parameterized matrix job
   # replacing the 4 hand-written ipk build jobs (build-mips/build-aarch64/

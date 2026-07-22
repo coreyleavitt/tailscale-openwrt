@@ -1,15 +1,19 @@
 #!/bin/sh
 # tests/apk/select-matrix.sh
 #
-# Slice S1b/S5a test (RFC docs/rfc-apk-arch-coverage.md §5.8 migration-safety
-# gate + §5.3 round-2 P-SEV2/F-SEV2 PR-canary-key fix + the S5a gate-flip):
+# Slice S1b/S5a/S7a test (RFC docs/rfc-apk-arch-coverage.md §5.8
+# migration-safety gate + §5.3 round-2 P-SEV2/F-SEV2 PR-canary-key fix +
+# the S5a gate-flip + §5.6 CI verification):
 # scripts/select-matrix.sh operates over the widened 35-row arches.json
-# (S1b), with THREE independently-gated named outputs (S1.5/S5a):
+# (S1b), with FOUR independently-gated named outputs (S1.5/S5a/S7a):
 #   --ipk-arches (default)   -- pinned to tier=="core" FOREVER (ipk must
 #                                never widen, RFC non-goal).
 #   --compile-families       -- S5a gate-flip: every FEASIBLE (reason==null)
 #                                arch/family, tier=="core"-only filter DROPPED.
 #   --publish-arches         -- same S5a gate-flip, flat per-arch shape.
+#   --verify-families        -- S7a: one row per BOOTABLE family (a family
+#                                with a verify:true arch, per families.sh
+#                                --with-ci), event-conditional.
 #
 # No docker/qemu needed -- pure jq/shell, exercising the real (committed)
 # arches.json directly, the same style as tests/apk/families.sh.
@@ -38,6 +42,11 @@
 #      event select all 30 FEASIBLE arches / all 14 families (core-only
 #      filter dropped), never an infeasible (reason!=null) row, and never
 #      fewer than the full feasible set.
+#   7. S7a --verify-families: non-PR selects exactly the 10 bootable-family
+#      representatives (excluding the 4 S7b-unverified families), each row
+#      carrying the fields the qemu-verify/native-install-verify CI job
+#      needs; PR selects exactly the canary's family, count-stable
+#      regardless of how many arches share a family; order-independence.
 #
 # Usage: sh tests/apk/select-matrix.sh
 
@@ -135,7 +144,8 @@ echo
 echo "=== A64 over-select regression (round-2 P-SEV2): PR count independent of container_arch ==="
 
 # arches.json now carries FOUR goarch=="arm64" rows (A64 family widened in
-# S1b), one of which -- aarch64_cortex-a53 -- still carries
+# S1b), two of which -- aarch64_cortex-a53 (the legacy core pin) and
+# aarch64_generic (S7a's true native-match verify pin) -- carry
 # container_arch=="aarch64", the exact field the old (deleted)
 # `.canary == true or .container_arch == "aarch64"` clause matched on. The
 # regression this guards: that clause would have pulled all 4 into every PR
@@ -145,8 +155,8 @@ ARM64_COUNT=$(jq '[.[] | select(.goarch == "arm64")] | length' "${ARCHES_JSON}")
 assert_eq "precondition: arches.json has 4 arm64 (A64) rows" "4" "${ARM64_COUNT}"
 
 CONTAINER_AARCH64_COUNT=$(jq '[.[] | select(.container_arch == "aarch64")] | length' "${ARCHES_JSON}")
-assert_eq "precondition: exactly 1 row still carries container_arch==aarch64 (the deleted OR-clause's old key)" \
-    "1" "${CONTAINER_AARCH64_COUNT}"
+assert_eq "precondition: 2 rows now carry container_arch==aarch64 (the deleted OR-clause's old key)" \
+    "2" "${CONTAINER_AARCH64_COUNT}"
 
 PR_COUNT=$("${SELECT_MATRIX}" pull_request --publish-arches "${ARCHES_JSON}" | jq 'length')
 assert_eq "PR selection count stays 1 (canary-only) despite 4 arm64/A64 rows existing" "1" "${PR_COUNT}"
@@ -289,5 +299,114 @@ ORIGINAL_PUBLISH=$(echo "${PUBLISH_JSON}" | jq -S '[.[].name] | sort')
 assert_eq "shuffling arches.json's row order does not change the --publish-arches name set" \
     "${ORIGINAL_PUBLISH}" "${SHUFFLED_PUBLISH}"
 rm -f "${SHUFFLED_JSON2}"
+
+echo
+
+# --- 7. --verify-families (S7a, RFC §5.6): bootable-family reps ------------
+
+echo "=== --verify-families: non-PR selects exactly the 10 bootable-family representatives ==="
+
+VERIFY_JSON=$("${SELECT_MATRIX}" workflow_dispatch --verify-families "${ARCHES_JSON}")
+VERIFY_COUNT=$(echo "${VERIFY_JSON}" | jq 'length')
+assert_eq "workflow_dispatch --verify-families count is 10 (the RFC §5.6 bootable set, X86SOFT resolved bootable)" \
+    "10" "${VERIFY_COUNT}"
+
+EXPECTED_VERIFY_FAMILIES='["A64","A7HF","AMD64","LOONG64","M32BE","M32LE","M64BE","M64LE","X86SOFT","X86SSE2"]'
+VERIFY_FAMILY_NAMES=$(echo "${VERIFY_JSON}" | jq -c '[.[].family] | sort')
+assert_eq "--verify-families yields exactly the 10 bootable family ids" \
+    "${EXPECTED_VERIFY_FAMILIES}" "${VERIFY_FAMILY_NAMES}"
+
+RELEASE_VERIFY_JSON=$("${SELECT_MATRIX}" release --verify-families "${ARCHES_JSON}")
+assert_eq "release --verify-families matches workflow_dispatch --verify-families" \
+    "$(echo "${VERIFY_JSON}" | jq -S .)" "$(echo "${RELEASE_VERIFY_JSON}" | jq -S .)"
+
+echo
+
+echo "=== --verify-families: the 4 S7b-unverified families never appear ==="
+
+for unverified_family in A6HF ASOFT M32LEHF RV64; do
+    PRESENT=$(echo "${VERIFY_JSON}" | jq --arg f "${unverified_family}" '[.[] | select(.family == $f)] | length')
+    assert_eq "unverified family ${unverified_family} is absent from --verify-families" "0" "${PRESENT}"
+done
+
+echo
+
+echo "=== --verify-families: every row carries the fields the CI verify job needs ==="
+
+MISSING_VERIFY_FIELDS=$(echo "${VERIFY_JSON}" | jq \
+    '[.[] | select(.verify == null or .verify == ""
+                    or .rootfs_url == null or .rootfs_url == ""
+                    or .rootfs_sha256 == null or .rootfs_sha256 == ""
+                    or .container_arch == null or .container_arch == ""
+                    or .goarch == null or .goarch == "")] | length')
+assert_eq "every --verify-families row carries verify/rootfs_url/rootfs_sha256/container_arch/goarch" \
+    "0" "${MISSING_VERIFY_FIELDS}"
+
+echo
+
+echo "=== --verify-families: A64/A7HF resolve to the true native-match arch (D2 regression guard) ==="
+
+A64_VERIFY_NAME=$(echo "${VERIFY_JSON}" | jq -r '.[] | select(.family == "A64") | .verify')
+assert_eq "verify_families' A64 representative is aarch64_generic, not aarch64_cortex-a53" \
+    "aarch64_generic" "${A64_VERIFY_NAME}"
+
+A7HF_VERIFY_NAME=$(echo "${VERIFY_JSON}" | jq -r '.[] | select(.family == "A7HF") | .verify')
+assert_eq "verify_families' A7HF representative is arm_cortex-a15_neon-vfpv4, not arm_cortex-a7" \
+    "arm_cortex-a15_neon-vfpv4" "${A7HF_VERIFY_NAME}"
+
+echo
+
+echo "=== --verify-families: pull_request selects exactly the canary's family, count-stable ==="
+
+PR_VERIFY_JSON=$("${SELECT_MATRIX}" pull_request --verify-families "${ARCHES_JSON}")
+assert_eq "pull_request --verify-families count is 1" "1" "$(echo "${PR_VERIFY_JSON}" | jq 'length')"
+assert_eq "pull_request --verify-families is M32BE (mips_24kc's family)" '["M32BE"]' \
+    "$(echo "${PR_VERIFY_JSON}" | jq -c '[.[].family]')"
+assert_eq "pull_request --verify-families verify arch is exactly the canary arch" '"mips_24kc"' \
+    "$(echo "${PR_VERIFY_JSON}" | jq -c '.[0].verify')"
+
+# Same over-select regression as section 4 above, applied to verify_families:
+# PR count must stay 1 even though A64 has 4 gated arm64 rows and one of them
+# (aarch64_cortex-a53) still carries container_arch=="aarch64".
+PR_VERIFY_HAS_A64=$(echo "${PR_VERIFY_JSON}" | jq '[.[] | select(.family == "A64")] | length')
+assert_eq "no A64 row is pulled into the --verify-families PR leg" "0" "${PR_VERIFY_HAS_A64}"
+
+echo
+
+echo "=== --verify-families: order-independence (row-shuffled arches.json yields the same set) ==="
+
+SHUFFLED_JSON3=$(mktemp)
+jq '[.[3], .[1], .[0], .[2]] + .[4:]' "${ARCHES_JSON}" > "${SHUFFLED_JSON3}"
+SHUFFLED_VERIFY=$("${SELECT_MATRIX}" workflow_dispatch --verify-families "${SHUFFLED_JSON3}" | jq -S 'sort_by(.family)')
+ORIGINAL_VERIFY=$(echo "${VERIFY_JSON}" | jq -S 'sort_by(.family)')
+assert_eq "shuffling arches.json's row order does not change the --verify-families view" \
+    "${ORIGINAL_VERIFY}" "${SHUFFLED_VERIFY}"
+rm -f "${SHUFFLED_JSON3}"
+
+echo
+
+echo "=== --verify-families: hard-fails on a canary arch whose family is not bootable (RFC §5.2 canary subseteq verify) ==="
+
+# Flip canary onto arm_cortex-a7 (ASOFT -- genuinely unbootable, no
+# verify:true row anywhere in its family) instead of mips_24kc (M32BE --
+# bootable). This must hard-fail loudly, not silently shrink the PR matrix
+# to zero rows.
+CANARY_MISMATCH_JSON=$(mktemp)
+jq '(.[] | select(.name == "mips_24kc") | .canary) |= false
+    | (.[] | select(.name == "arm_cortex-a7") | .canary) |= true' \
+    "${ARCHES_JSON}" > "${CANARY_MISMATCH_JSON}"
+
+set +e
+"${SELECT_MATRIX}" pull_request --verify-families "${CANARY_MISMATCH_JSON}" >"${CANARY_MISMATCH_JSON}.out" 2>&1
+CANARY_MISMATCH_RC=$?
+set -e
+
+if [ "${CANARY_MISMATCH_RC}" -ne 0 ]; then
+    log_info "OK: --verify-families hard-fails when the canary arch's family has no verify:true row"
+else
+    log_fail "--verify-families should hard-fail on a canary arch whose family is unbootable:
+$(cat "${CANARY_MISMATCH_JSON}.out")"
+fi
+rm -f "${CANARY_MISMATCH_JSON}" "${CANARY_MISMATCH_JSON}.out"
 
 harness_finish "tests/apk/select-matrix.sh"

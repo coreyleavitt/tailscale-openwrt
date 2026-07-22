@@ -96,10 +96,22 @@
 # checksum-verified) rootfs download; the install itself runs with
 # `--network none`.
 #
+# RFC §5.6/S7a (D2): INSTALL_NATIVE_ONLY=1 drops the multi-arch
+# `/etc/apk/arch` override above (correction 1) and instead ASSERTS the
+# container's own, un-mutated native arch already equals ARCH -- the
+# native-arch-only verify the `apk-native-verify` CI job (matrixed over
+# select-matrix.sh --verify-families) uses. Default (unset/0): unchanged
+# override behavior, for the existing ipk_arches-scoped multi-arch coverage
+# (aarch64_cortex-a53/arm_cortex-a7 are not their own family's true native
+# match -- see scripts/families.sh --with-ci's header comment -- so that
+# coverage still needs the override to install at all).
+#
 # Usage:
 #   sh tests/apk/install.sh              # all arches in arches.json
 #   sh tests/apk/install.sh <arch_name>  # single arch only (CI per-arch
 #                                         # matrix step, mirrors qemu.sh)
+#   INSTALL_NATIVE_ONLY=1 sh tests/apk/install.sh <arch_name>
+#                                         # native-arch-only verify, no override
 
 set -eu
 
@@ -310,9 +322,28 @@ install_verify_one() {
     docker exec "${TARGET_CID}" mkdir -p /stubrepo
     docker cp "${WORKDIR}/stubrepo-${ARCH}/." "${TARGET_CID}:/stubrepo/"
 
-    # Correction 1 above: multi-arch /etc/apk/arch, not `apk add --arch`.
+    # RFC §5.6/S7a D2: INSTALL_NATIVE_ONLY=1 drops the multi-arch override --
+    # the whole point of the CI native-verify job is to exercise the
+    # device's REAL, un-mutated /etc/apk/arch (the override is exactly what
+    # hid the original arm_cortex-a7-vs-armsr/armv7 mismatch). Default
+    # (unset): Correction 1's original behavior, unchanged -- appends ARCH
+    # as an additional acceptable line via apk_arch_override_line
+    # (tests/apk/lib.sh) -- kept for the existing ipk_arches-scoped
+    # multi-arch install coverage, which genuinely needs it (aarch64_cortex-
+    # a53/arm_cortex-a7 are NOT their own family's true native match --
+    # see families.sh --with-ci's header comment).
     NATIVE_ARCH_LINE=$(docker exec "${TARGET_CID}" cat /etc/apk/arch)
-    docker exec "${TARGET_CID}" sh -c "printf '%s\n%s\n' '${NATIVE_ARCH_LINE}' '${ARCH}' > /etc/apk/arch"
+    if [ "${INSTALL_NATIVE_ONLY:-0}" = "1" ]; then
+        if ! native_arch_matches "${NATIVE_ARCH_LINE}" "${ARCH}"; then
+            log_fail "${ARCH}: INSTALL_NATIVE_ONLY=1 but the container's native /etc/apk/arch ('$(printf '%s' "${NATIVE_ARCH_LINE}" | head -n1)') does not match -- this arch is NOT its rootfs's true native representative"
+            untrack_and_remove "${TARGET_CID}"
+            return 0
+        fi
+        log_info "OK: ${ARCH}: native /etc/apk/arch already matches -- no override applied (native-only verify)"
+    else
+        printf '%s\n' "$(apk_arch_override_line "${NATIVE_ARCH_LINE}" "${ARCH}")" \
+            | docker exec -i "${TARGET_CID}" sh -c 'cat > /etc/apk/arch'
+    fi
     echo "/etc/apk/arch now: $(docker exec "${TARGET_CID}" cat /etc/apk/arch | tr '\n' ' ')"
 
     # procd-less prep: /var -> tmp is empty in an unbooted rootfs; enable's
