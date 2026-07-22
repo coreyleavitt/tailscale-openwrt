@@ -438,6 +438,8 @@ assert_eq "forced bad signature: exit non-zero (fail closed)" "true" \
     "$([ "${RC}" -ne 0 ] && echo true || echo false)"
 assert_contains "forced bad signature: names the H7 gate as the cause" \
     "$(cat "${WORKDIR}/badsig.log")" "verification FAILED"
+assert_eq "H1 bonus: forced bad signature -- packages.adb is NEVER left at its final path either" "false" \
+    "$([ -f "${PAGES_ROOT_BADSIG}/apk/aarch64_cortex-a53/packages.adb" ] && echo true || echo false)"
 assert_eq "forced bad signature: feed-guard.sh was NEVER called (gate runs before monotonicity/deploy)" "" \
     "$(cat "${FEED_GUARD_LOG3}")"
 
@@ -465,6 +467,19 @@ assert_not_contains "monotonicity guard rejects: plan-retention was NEVER reache
     "$(cat "${FEED_GUARD_LOG4}")" "plan-retention"
 assert_eq "monotonicity guard rejects: retained.json was never written" "false" \
     "$([ -f "${PAGES_ROOT_MONO}/apk/aarch64_cortex-a53/retained.json" ] && echo true || echo false)"
+
+# H1 (RED/GREEN proof, checkpoint laundering): the sign+H7-verify above this
+# point in the pipeline was entirely LEGITIMATE (FAKE_VERIFY_RESULT=VALID) --
+# only check-monotonic rejected. A validly-signed packages.adb must NEVER be
+# left sitting at its final path after that rejection: publish-feed.sh's
+# is_checkpointed() only checks "does packages.adb exist and verify", so any
+# packages.adb left here would be silently read as done (and deployed) on
+# the next retry round or in final accounting, defeating the downgrade
+# guard entirely.
+assert_eq "H1: monotonicity guard rejects -- packages.adb is NEVER left at its final, checkpointable path" "false" \
+    "$([ -f "${PAGES_ROOT_MONO}/apk/aarch64_cortex-a53/packages.adb" ] && echo true || echo false)"
+assert_eq "H1: monotonicity guard rejects -- the pending scratch index is cleaned up too (no orphaned file)" "false" \
+    "$([ -f "${PAGES_ROOT_MONO}/apk/aarch64_cortex-a53/packages.adb.pending" ] && echo true || echo false)"
 
 echo
 
@@ -573,5 +588,50 @@ assert_eq "persistent failure: packages.adb never written" "false" \
     "$([ -f "${PAGES_ROOT_RETRY_FAIL}/apk/aarch64_cortex-a53/packages.adb" ] && echo true || echo false)"
 assert_eq "persistent failure: feed-guard.sh NEVER called" "" \
     "$(cat "${FEED_GUARD_LOG8}")"
+
+# ===========================================================================
+# 9. M2 (RED/GREEN proof): a path-traversal entry in the (unsigned, live)
+#    retained.json must never let a retained-blob carry-forward write
+#    escape ARCH_DIR.
+# ===========================================================================
+echo "=== 9. M2: path traversal via retained.json is rejected -- a '../' entry never escapes ARCH_DIR ==="
+
+PAGES_ROOT_TRAVERSAL="${WORKDIR}/pages-root-traversal"
+FEED_GUARD_LOG9="${WORKDIR}/feed-guard-traversal.log"
+CURL_LOG9="${WORKDIR}/curl-traversal.log"
+: > "${FEED_GUARD_LOG9}"
+: > "${CURL_LOG9}"
+
+RC=$(FEED_GUARD_LOG="${FEED_GUARD_LOG9}" CURL_LOG="${CURL_LOG9}" \
+     FAKE_MONOTONIC_RC=0 FAKE_VERIFY_RESULT=VALID FAKE_RETENTION_JSON='["../../evil"]' \
+     run_publish "traversal" "aarch64_cortex-a53" "${SRC_APK}" "${SRC_APK_BASENAME}" "${PAGES_ROOT_TRAVERSAL}")
+assert_eq "path traversal retained entry: exit non-zero (fail closed)" "true" \
+    "$([ "${RC}" -ne 0 ] && echo true || echo false)"
+assert_contains "path traversal retained entry: names the cause" \
+    "$(cat "${WORKDIR}/traversal.log")" "unsafe"
+assert_eq "path traversal retained entry: no file escaped two levels up (pages-root's parent)" "false" \
+    "$([ -f "${WORKDIR}/evil" ] && echo true || echo false)"
+assert_eq "path traversal retained entry: no file escaped to pages-root itself" "false" \
+    "$([ -f "${PAGES_ROOT_TRAVERSAL}/evil" ] && echo true || echo false)"
+assert_not_contains "path traversal retained entry: curl was never invoked with the traversal path" \
+    "$(cat "${CURL_LOG9}")" "../../evil"
+
+# A bare ".." entry (no `/`, so the slash guard alone wouldn't catch it) must
+# also be rejected.
+PAGES_ROOT_TRAVERSAL2="${WORKDIR}/pages-root-traversal2"
+FEED_GUARD_LOG9B="${WORKDIR}/feed-guard-traversal2.log"
+CURL_LOG9B="${WORKDIR}/curl-traversal2.log"
+: > "${FEED_GUARD_LOG9B}"
+: > "${CURL_LOG9B}"
+
+RC=$(FEED_GUARD_LOG="${FEED_GUARD_LOG9B}" CURL_LOG="${CURL_LOG9B}" \
+     FAKE_MONOTONIC_RC=0 FAKE_VERIFY_RESULT=VALID FAKE_RETENTION_JSON='[".."]' \
+     run_publish "traversal2" "aarch64_cortex-a53" "${SRC_APK}" "${SRC_APK_BASENAME}" "${PAGES_ROOT_TRAVERSAL2}")
+assert_eq "bare '..' retained entry: exit non-zero (fail closed)" "true" \
+    "$([ "${RC}" -ne 0 ] && echo true || echo false)"
+assert_contains "bare '..' retained entry: names the cause" \
+    "$(cat "${WORKDIR}/traversal2.log")" "unsafe"
+
+echo
 
 harness_finish "tests/apk/publish-arch.sh"

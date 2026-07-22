@@ -15,7 +15,7 @@
     "rootfs_sha256": "d5e42b396d7f64697c65a884912107b49e05d2b2f2c00a251f94c44f8deef507",
     "container_arch": "aarch64",
     "tier": "core",
-    "verify": false
+    "native_verify": false
   },
   {
     "name": "arm_cortex-a7",
@@ -33,7 +33,7 @@
     "rootfs_sha256": "97bd0ac74bf7e9473162449932f7e336e509da467e5ce45d960716934f77e5ce",
     "container_arch": "armv7",
     "tier": "core",
-    "verify": false
+    "native_verify": false
   },
   {
     "name": "mips_24kc",
@@ -51,7 +51,7 @@
     "rootfs_sha256": "89830656217c4d1412dc1b3d4789659f272dd17823ce0bffa484274e11e5b0eb",
     "container_arch": "mips",
     "tier": "core",
-    "verify": true
+    "native_verify": true
   },
   {
     "name": "mipsel_24kc",
@@ -69,7 +69,7 @@
     "rootfs_sha256": "c7a8be40886de896affc5606befd99cc2014c11e6ae6594762242ed3f56e0b29",
     "container_arch": "mipsel",
     "tier": "core",
-    "verify": true
+    "native_verify": true
   },
   {
     "name": "aarch64_generic",
@@ -87,7 +87,7 @@
     "rootfs_sha256": "d5e42b396d7f64697c65a884912107b49e05d2b2f2c00a251f94c44f8deef507",
     "container_arch": "aarch64",
     "tier": "extended",
-    "verify": true
+    "native_verify": true
   },
   {
     "name": "aarch64_cortex-a72",
@@ -105,7 +105,7 @@
     "rootfs_sha256": null,
     "container_arch": null,
     "tier": "extended",
-    "verify": false
+    "native_verify": false
   },
   {
     "name": "aarch64_cortex-a76",
@@ -123,7 +123,7 @@
     "rootfs_sha256": null,
     "container_arch": null,
     "tier": "extended",
-    "verify": false
+    "native_verify": false
   },
   {
     "name": "arm_cortex-a5_vfpv4",
@@ -141,7 +141,7 @@
     "rootfs_sha256": null,
     "container_arch": null,
     "tier": "extended",
-    "verify": false
+    "native_verify": false
   },
   {
     "name": "arm_cortex-a7_vfpv4",
@@ -159,7 +159,7 @@
     "rootfs_sha256": null,
     "container_arch": null,
     "tier": "extended",
-    "verify": false
+    "native_verify": false
   },
   {
     "name": "arm_cortex-a7_neon-vfpv4",
@@ -177,7 +177,7 @@
     "rootfs_sha256": null,
     "container_arch": null,
     "tier": "extended",
-    "verify": false
+    "native_verify": false
   },
   {
     "name": "arm_cortex-a8_vfpv3",
@@ -195,7 +195,7 @@
     "rootfs_sha256": null,
     "container_arch": null,
     "tier": "extended",
-    "verify": false
+    "native_verify": false
   },
   {
     "name": "arm_cortex-a9_neon",
@@ -213,7 +213,7 @@
     "rootfs_sha256": null,
     "container_arch": null,
     "tier": "extended",
-    "verify": false
+    "native_verify": false
   },
   {
     "name": "arm_cortex-a9_vfpv3-d16",
@@ -231,7 +231,7 @@
     "rootfs_sha256": null,
     "container_arch": null,
     "tier": "extended",
-    "verify": false
+    "native_verify": false
   },
   {
     "name": "arm_cortex-a15_neon-vfpv4",
@@ -249,7 +249,7 @@
     "rootfs_sha256": "97bd0ac74bf7e9473162449932f7e336e509da467e5ce45d960716934f77e5ce",
     "container_arch": "armv7",
     "tier": "extended",
-    "verify": true
+    "native_verify": true
   },
   {
     "name": "arm_arm1176jzf-s_vfp",
@@ -267,7 +267,7 @@
     "rootfs_sha256": null,
     "container_arch": null,
     "tier": "extended",
-    "verify": false
+    "native_verify": false
   },
   {
     "name": "arm_cortex-a9",
@@ -285,7 +285,7 @@
     "rootfs_sha256": null,
     "container_arch": null,
     "tier": "extended",
-    "verify": false
+    "native_verify": false
   },
   {
     "name": "arm_arm926ej-s",
@@ -303,7 +303,7 @@
     "rootfs_sha256": null,
     "container_arch": null,
     "tier": "extended",
-    "verify": false
+    "native_verify": false
   },
   {
     "name": "arm_xscale",
@@ -321,7 +321,7 @@
     "rootfs_sha256": null,
     "container_arch": null,
     "tier": "extended",
-    "verify": false
+    "native_verify": false
   },
   {
     "name": "mips_mips32",
@@ -339,7 +339,7 @@
     "rootfs_sha256": null,
     "container_arch": null,
     "tier": "extended",
-    "verify": false
+    "native_verify": false
   },
   {
     "name": "mipsel_74kc",
@@ -357,7 +357,7 @@
     "rootfs_sha256": null,
     "container_arch": null,
     "tier": "extended",
-    "verify": false
+    "native_verify": false
   },
   {
     "name": "mipsel_mips32",
@@ -375,7 +375,7 @@
     "rootfs_sha256": null,
     "container_arch": null,
     "tier": "extended",
-    "verify": false
+    "native_verify": false
   },
   {
     "name": "mipsel_24kc_24kf",
@@ -393,7 +393,7 @@
     "rootfs_sha256": null,
     "container_arch": null,
     "tier": "extended",
-    "verify": false
+    "native_verify": false
   },
   {
     "name": "mips64_mips64r2",
@@ -411,7 +411,7 @@
     "rootfs_sha256": "93dc6a368d4f8b9da9f6a58a480293055df9b00292969da5f730d1526825b601",
     "container_arch": "mips64",
     "tier": "extended",
-    "verify": true
+    "native_verify": true
   },
   {
     "name": "mips64_octeonplus",
@@ -429,7 +429,7 @@
     "rootfs_sha256": null,
     "container_arch": null,
     "tier": "extended",
-    "verify": false
+    "native_verify": false
   },
   {
     "name": "mips64el_mips64r2",
@@ -447,7 +447,7 @@
     "rootfs_sha256": "59d2f0204d7f988749a38d0f2c4adb63f61bd632643ac3f96f6c5b4dc67a1578",
     "container_arch": "mips64el",
     "tier": "extended",
-    "verify": true
+    "native_verify": true
   },
   {
     "name": "i386_pentium4",
@@ -465,7 +465,7 @@
     "rootfs_sha256": "5cc8071fb2af6d8281eb5782c39234ba522477188f92bf08f4c9a1f2791bd5a7",
     "container_arch": "x86",
     "tier": "extended",
-    "verify": true
+    "native_verify": true
   },
   {
     "name": "i386_pentium-mmx",
@@ -483,7 +483,7 @@
     "rootfs_sha256": "dfdfc8d1ceeed978e4060227bf06a163c2d4755d7586f849c48d01730d127df5",
     "container_arch": "x86",
     "tier": "extended",
-    "verify": true
+    "native_verify": true
   },
   {
     "name": "x86_64",
@@ -501,7 +501,7 @@
     "rootfs_sha256": "11c2f26b9d48c02cbdb3b63d499e1f6413ed62bcdbbea78937b12279b95acb1e",
     "container_arch": "x86_64",
     "tier": "extended",
-    "verify": true
+    "native_verify": true
   },
   {
     "name": "riscv64_generic",
@@ -519,7 +519,7 @@
     "rootfs_sha256": null,
     "container_arch": null,
     "tier": "extended",
-    "verify": false
+    "native_verify": false
   },
   {
     "name": "loongarch64_generic",
@@ -537,7 +537,7 @@
     "rootfs_sha256": "b73d27cd6f9499f854c8d0213e80f4401b7a7eaa3833b6b2b76190559175fa55",
     "container_arch": "loongarch64",
     "tier": "extended",
-    "verify": true
+    "native_verify": true
   },
   {
     "name": "arm_fa526",
@@ -555,7 +555,7 @@
     "rootfs_sha256": null,
     "container_arch": null,
     "tier": "infeasible",
-    "verify": false
+    "native_verify": false
   },
   {
     "name": "armeb_xscale",
@@ -573,7 +573,7 @@
     "rootfs_sha256": null,
     "container_arch": null,
     "tier": "infeasible",
-    "verify": false
+    "native_verify": false
   },
   {
     "name": "powerpc_8548",
@@ -591,7 +591,7 @@
     "rootfs_sha256": null,
     "container_arch": null,
     "tier": "infeasible",
-    "verify": false
+    "native_verify": false
   },
   {
     "name": "powerpc_464fp",
@@ -609,7 +609,7 @@
     "rootfs_sha256": null,
     "container_arch": null,
     "tier": "infeasible",
-    "verify": false
+    "native_verify": false
   },
   {
     "name": "powerpc64_e5500",
@@ -627,6 +627,6 @@
     "rootfs_sha256": null,
     "container_arch": null,
     "tier": "infeasible",
-    "verify": false
+    "native_verify": false
   }
 ]

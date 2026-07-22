@@ -8,7 +8,7 @@
 # Same INSTALL_SH_NO_MAIN=1 source-and-call-functions-directly pattern as
 # tests/apk/install-verify.sh -- no network, no root, no containers.
 #
-# Four parts:
+# Six parts:
 #   A. Infeasible arch: apk_path() aborts BEFORE touching the feed, with the
 #      RFC section 5.5 wording, when /etc/apk/arch names one of arches.json's
 #      reason-bearing rows.
@@ -20,6 +20,13 @@
 #   D. Drift guard: scripts/gen-install-arch-block.sh regenerated against the
 #      real arches.json must be byte-identical to the GENERATED block
 #      committed in scripts/install.sh.
+#   E. M3 (code-review finding): escape_for_dq neutralizes a `.reason`
+#      containing shell metacharacters (`" $ backtick`) that would otherwise
+#      break out of the GENERATED echo's double-quoted argument.
+#   F. R2 (round-2 code-review finding): a `.reason` containing an embedded
+#      newline -- with an injected, case-arm-shaped payload riding it -- must
+#      not break row parsing or execute; and families.sh --validate rejects
+#      the same fixture at the source (R2a).
 #
 # Usage:
 #   sh tests/apk/install-arch-block.sh
@@ -377,5 +384,141 @@ else
     printf '%s\n' "${FRESH_BLOCK}" > "${WORKDIR}/d2-fresh.txt"
     diff "${WORKDIR}/d2-committed.txt" "${WORKDIR}/d2-fresh.txt" >&2 || true
 fi
+
+# =====================================================================
+# Part E -- M3 (code-review finding): .reason is shell-escaped, not
+# spliced verbatim into the GENERATED echo. A reason containing shell
+# metacharacters (here, a `"` that would otherwise break out of the
+# double-quoted echo argument, chaining extra shell statements) must NOT
+# execute; the generated infeasible_reason() must still print it back
+# literally.
+# =====================================================================
+echo ""
+echo "############################################"
+echo "### Part E: gen-install-arch-block.sh escapes shell-dangerous .reason text (M3)"
+echo "############################################"
+
+MALICIOUS_REASON='x"; touch PWNED; echo "y'
+
+jq -n --arg reason "${MALICIOUS_REASON}" '[{
+    "name": "evil_arch", "goarch": "", "goarm": "", "gomips": "", "gomips64": "", "go386": "",
+    "endian": "little", "float": "soft", "reason": $reason,
+    "container_arch": "", "canary": false, "tier": "infeasible", "verify": false,
+    "rootfs_target": "", "rootfs_url": "", "rootfs_sha256": ""
+}]' > "${WORKDIR}/malicious-arches.json"
+
+GENERATED_BLOCK=$("${INSTALL_DIR}/gen-install-arch-block.sh" "${WORKDIR}/malicious-arches.json")
+
+rm -f "${WORKDIR}/PWNED"
+(
+    cd "${WORKDIR}"
+    eval "${GENERATED_BLOCK}"
+    infeasible_reason evil_arch
+) >"${WORKDIR}/e1.out" 2>"${WORKDIR}/e1.err"
+E1_RC=$?
+
+assert_eq "E1: infeasible_reason(evil_arch) succeeds (finds the case arm)" "0" "${E1_RC}"
+assert_eq "E1: the injected 'touch PWNED' did NOT execute" \
+    "0" "$([ -e "${WORKDIR}/PWNED" ] && echo 1 || echo 0)"
+assert_eq "E1: infeasible_reason prints the malicious reason back LITERALLY, verbatim" \
+    "${MALICIOUS_REASON}" "$(cat "${WORKDIR}/e1.out")"
+
+# --- E2: a second flavor -- backtick + \$(...) command substitution, also
+# neutralized (proves the fix isn't narrowly tuned to just the `"` case).
+E2_REASON='`touch PWNED2` and $(touch PWNED3)'
+jq -n --arg reason "${E2_REASON}" '[{
+    "name": "evil_arch2", "goarch": "", "goarm": "", "gomips": "", "gomips64": "", "go386": "",
+    "endian": "little", "float": "soft", "reason": $reason,
+    "container_arch": "", "canary": false, "tier": "infeasible", "verify": false,
+    "rootfs_target": "", "rootfs_url": "", "rootfs_sha256": ""
+}]' > "${WORKDIR}/malicious-arches-2.json"
+
+GENERATED_BLOCK_2=$("${INSTALL_DIR}/gen-install-arch-block.sh" "${WORKDIR}/malicious-arches-2.json")
+
+rm -f "${WORKDIR}/PWNED2" "${WORKDIR}/PWNED3"
+(
+    cd "${WORKDIR}"
+    eval "${GENERATED_BLOCK_2}"
+    infeasible_reason evil_arch2
+) >"${WORKDIR}/e2.out" 2>"${WORKDIR}/e2.err"
+
+assert_eq "E2: neither backtick nor \$(...) substitution executed (PWNED2)" \
+    "0" "$([ -e "${WORKDIR}/PWNED2" ] && echo 1 || echo 0)"
+assert_eq "E2: neither backtick nor \$(...) substitution executed (PWNED3)" \
+    "0" "$([ -e "${WORKDIR}/PWNED3" ] && echo 1 || echo 0)"
+assert_eq "E2: infeasible_reason prints the malicious reason back LITERALLY, verbatim" \
+    "${E2_REASON}" "$(cat "${WORKDIR}/e2.out")"
+
+# NOTE: Part D above already proves the escaping change is a no-op for the
+# real, current reason set (byte-identical committed-vs-fresh comparison),
+# so M3's fix needs no companion scripts/install.sh regeneration.
+
+# =====================================================================
+# Part F -- R2 (round-2 code-review finding, HIGH-adjacent): a `.reason`
+# containing an EMBEDDED NEWLINE must not break row parsing and splice raw,
+# unescaped text into the GENERATED block. escape_for_dq alone (Part E)
+# only ever protects against `\ " $ backtick`, not newlines -- the old
+# `jq -r '"\(.name)\t\(.reason)"'` extraction decoded a JSON-escaped `\n`
+# back into a literal newline byte, which the `while IFS=<tab> read` row
+# loop then treated as an extra row boundary. gen-install-arch-block.sh now
+# iterates rows via `jq -c` (keeping JSON string escaping intact, so an
+# embedded newline can never manifest as a raw delimiter) -- this part
+# proves that fix against a payload shaped to actually exploit the OLD
+# bug: an embedded newline immediately followed by text that looks like it
+# closes the current case arm and opens a new, executable one.
+# =====================================================================
+echo ""
+echo "############################################"
+echo "### Part F: gen-install-arch-block.sh survives an embedded-newline injection in .reason (R2)"
+echo "############################################"
+
+MULTILINE_REASON="safe start
+evil_arch3) touch PWNED_NL ;;
+        *)"
+
+jq -n --arg reason "${MULTILINE_REASON}" '[{
+    "name": "evil_arch3", "goarch": "", "goarm": "", "gomips": "", "gomips64": "", "go386": "",
+    "endian": "little", "float": "soft", "reason": $reason,
+    "container_arch": "", "canary": false, "tier": "infeasible", "native_verify": false,
+    "rootfs_target": "", "rootfs_url": "", "rootfs_sha256": ""
+}]' > "${WORKDIR}/malicious-arches-nl.json"
+
+# Precondition: the fixture really carries an embedded newline, so this
+# isn't a vacuous test of the (already-covered) quote/backtick cases.
+assert_eq "F0 precondition: the fixture's reason contains a newline" \
+    "true" "$(jq -r '.[0].reason | test("\n")' "${WORKDIR}/malicious-arches-nl.json")"
+
+GENERATED_BLOCK_NL=$("${INSTALL_DIR}/gen-install-arch-block.sh" "${WORKDIR}/malicious-arches-nl.json")
+
+rm -f "${WORKDIR}/PWNED_NL"
+(
+    cd "${WORKDIR}"
+    eval "${GENERATED_BLOCK_NL}"
+    infeasible_reason evil_arch3
+) >"${WORKDIR}/f1.out" 2>"${WORKDIR}/f1.err"
+F1_RC=$?
+
+assert_eq "F1: infeasible_reason(evil_arch3) succeeds (finds the case arm)" "0" "${F1_RC}"
+assert_eq "F1: the injected 'touch PWNED_NL' did NOT execute" \
+    "0" "$([ -e "${WORKDIR}/PWNED_NL" ] && echo 1 || echo 0)"
+assert_eq "F1: infeasible_reason prints the malicious multi-line reason back LITERALLY, verbatim" \
+    "${MULTILINE_REASON}" "$(cat "${WORKDIR}/f1.out")"
+
+echo ""
+echo "=== Part F: families.sh --validate rejects the SAME embedded-newline fixture (R2a, at the source) ==="
+
+set +e
+sh "${INSTALL_DIR}/families.sh" --validate "${WORKDIR}/malicious-arches-nl.json" >"${WORKDIR}/f2.out" 2>&1
+F2_RC=$?
+set -e
+
+if [ "${F2_RC}" -ne 0 ]; then
+    log_info "OK: families.sh --validate rejects a .reason with an embedded newline"
+else
+    log_fail "families.sh --validate ACCEPTED a .reason with an embedded, injection-shaped newline:
+$(cat "${WORKDIR}/f2.out")"
+fi
+
+echo ""
 
 harness_finish "tests/apk/install-arch-block.sh"

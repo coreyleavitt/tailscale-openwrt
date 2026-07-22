@@ -143,7 +143,12 @@ else
     # tier=="core" set select-matrix.sh's non-PR branch and republish-feed
     # use, so this convenience "build everything" path stays consistent
     # with the migration-safety gate until S5 flips it.
-    for _a in $(jq -r '.[] | select(.tier == "core") | .name' "${ARCHES_JSON}"); do
+    #
+    # M4 (code-review finding): "which arches are tier==core" is
+    # scripts/families.sh --tier-arches's own accessor -- the single
+    # authored place that predicate lives -- not a second `select(.tier ==
+    # "core")` jq literal here.
+    for _a in $(sh "${REPO_ROOT}/scripts/families.sh" --tier-arches core "${ARCHES_JSON}"); do
         build_one "${_a}"
     done
 fi

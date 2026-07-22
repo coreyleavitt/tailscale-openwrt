@@ -12,8 +12,8 @@
 #                                arch/family, tier=="core"-only filter DROPPED.
 #   --publish-arches         -- same S5a gate-flip, flat per-arch shape.
 #   --verify-families        -- S7a: one row per BOOTABLE family (a family
-#                                with a verify:true arch, per families.sh
-#                                --with-ci), event-conditional.
+#                                with a native_verify:true arch, per
+#                                families.sh --with-ci), event-conditional.
 #
 # No docker/qemu needed -- pure jq/shell, exercising the real (committed)
 # arches.json directly, the same style as tests/apk/families.sh.
@@ -388,9 +388,9 @@ echo
 echo "=== --verify-families: hard-fails on a canary arch whose family is not bootable (RFC §5.2 canary subseteq verify) ==="
 
 # Flip canary onto arm_cortex-a7 (ASOFT -- genuinely unbootable, no
-# verify:true row anywhere in its family) instead of mips_24kc (M32BE --
-# bootable). This must hard-fail loudly, not silently shrink the PR matrix
-# to zero rows.
+# native_verify:true row anywhere in its family) instead of mips_24kc
+# (M32BE -- bootable). This must hard-fail loudly, not silently shrink the
+# PR matrix to zero rows.
 CANARY_MISMATCH_JSON=$(mktemp)
 jq '(.[] | select(.name == "mips_24kc") | .canary) |= false
     | (.[] | select(.name == "arm_cortex-a7") | .canary) |= true' \
@@ -402,7 +402,7 @@ CANARY_MISMATCH_RC=$?
 set -e
 
 if [ "${CANARY_MISMATCH_RC}" -ne 0 ]; then
-    log_info "OK: --verify-families hard-fails when the canary arch's family has no verify:true row"
+    log_info "OK: --verify-families hard-fails when the canary arch's family has no native_verify:true row"
 else
     log_fail "--verify-families should hard-fail on a canary arch whose family is unbootable:
 $(cat "${CANARY_MISMATCH_JSON}.out")"

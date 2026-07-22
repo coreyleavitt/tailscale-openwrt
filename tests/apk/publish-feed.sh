@@ -47,6 +47,7 @@ PUBLISH_FEED="${REPO_ROOT}/scripts/publish-feed.sh"
 require_cmd jq
 require_cmd python3
 require_cmd xargs
+require_cmd base64
 
 if [ ! -f "${PUBLISH_FEED}" ]; then
     echo "FAIL: ${PUBLISH_FEED} not found" >&2
@@ -678,28 +679,30 @@ echo
 # ===========================================================================
 echo "=== 10. S7b: assemble logs which PUBLISHED arches are in the unverified tier ==="
 
-# A richer committed-table fixture (real arches.json shape -- goarch/verify/
-# reason, not just name+tier) so scripts/families.sh --unverified-arches can
-# actually compute family grouping against it, per the RFC's "consult the
-# committed table via ARCHES_JSON_PATH ... reuse D1's query" requirement.
-# core-v1 is a boot-verified family (A64-shaped tuple, verify:true); the two
-# ext-unverified-* arches belong to two DIFFERENT unverified families
-# (riscv64 -> RV64-shaped, arm/goarm=6 -> A6HF-shaped) -- neither has any
-# verify:true row anywhere in this table.
+# A richer committed-table fixture (real arches.json shape -- goarch/
+# native_verify/reason, not just name+tier) so scripts/families.sh
+# --unverified-arches can actually compute family grouping against it, per
+# the RFC's "consult the committed table via ARCHES_JSON_PATH ... reuse
+# D1's query" requirement. core-v1 is a boot-verified family (A64-shaped
+# tuple, native_verify:true); the two ext-unverified-* arches belong to two
+# DIFFERENT unverified families (riscv64 -> RV64-shaped, arm/goarm=6 ->
+# A6HF-shaped) -- neither has any native_verify:true row anywhere in this
+# table. (M8: field renamed from `verify` to `native_verify` -- see
+# scripts/families.sh's header comment for why.)
 ARCHES_JSON_PATH_10="${WORKDIR}/arches-committed-10.json"
 jq -n '[
     {name:"core-v1", goarch:"arm64", goarm:"", gomips:"", gomips64:"", go386:"",
      endian:"little", float:"hard", reason:null, tier:"core", canary:false,
      rootfs_target:"armsr/armv8", rootfs_url:"https://example.invalid/armv8", rootfs_sha256:"deadbeef",
-     container_arch:"aarch64", verify:true},
+     container_arch:"aarch64", native_verify:true},
     {name:"ext-unverified-1", goarch:"riscv64", goarm:"", gomips:"", gomips64:"", go386:"",
      endian:"little", float:"hard", reason:null, tier:"extended", canary:false,
      rootfs_target:"", rootfs_url:"", rootfs_sha256:"",
-     container_arch:"riscv64", verify:false},
+     container_arch:"riscv64", native_verify:false},
     {name:"ext-unverified-2", goarch:"arm", goarm:"6", gomips:"", gomips64:"", go386:"",
      endian:"little", float:"hard", reason:null, tier:"extended", canary:false,
      rootfs_target:"", rootfs_url:"", rootfs_sha256:"",
-     container_arch:"arm", verify:false}
+     container_arch:"arm", native_verify:false}
 ]' > "${ARCHES_JSON_PATH_10}"
 
 BUILT_APKS_10A="${WORKDIR}/built-apks-10a"
@@ -749,6 +752,191 @@ assert_not_contains "10b: does NOT name ext-unverified-1 (not published this run
     "$(cat "${WORKDIR}/assemble-10b.log")" "ext-unverified-1"
 assert_not_contains "10b: does NOT name ext-unverified-2 (not published this run)" \
     "$(cat "${WORKDIR}/assemble-10b.log")" "ext-unverified-2"
+
+echo
+
+# ===========================================================================
+# 11. H1 regression (checkpoint laundering): a monotonicity rejection AFTER
+#    a valid sign+H7-verify must NEVER be treated as checkpointed. Unlike
+#    every test above (which stubs OUT publish-arch.sh entirely via
+#    PUBLISH_ARCH_SH), this drives the REAL scripts/publish-arch.sh through
+#    publish-feed.sh's own orchestration -- only publish-arch.sh's OWN
+#    overridable collaborators (apk/adb-sign.py/feed-guard.sh/curl) are
+#    stubbed, mirroring tests/apk/publish-arch.sh's own fixture style. This
+#    is the only way to prove the fix genuinely closes the "sign succeeds,
+#    H7 verify succeeds, THEN check-monotonic rejects -- does the rejected
+#    packages.adb still get read as done by is_checkpointed()" gap the
+#    finding describes, since publish-feed.sh's own checkpoint logic has no
+#    visibility into a FAKE publish-arch.sh's internal write-then-reject
+#    ordering.
+# ===========================================================================
+echo "=== 11. H1 regression: checkpoint laundering, driven through the REAL publish-arch.sh ==="
+
+H1_DIR="${WORKDIR}/h1"
+mkdir -p "${H1_DIR}/bin"
+
+H1_PUBKEY="${H1_DIR}/apk-signing.pem"
+printf -- '-----BEGIN PUBLIC KEY-----\nDUMMY\n-----END PUBLIC KEY-----\n' > "${H1_PUBKEY}"
+
+# Real apk stub: only `mkndx --output <file> ...` matters.
+H1_FAKE_APK="${H1_DIR}/bin/fake-apk.sh"
+cat > "${H1_FAKE_APK}" <<'EOF'
+#!/bin/sh
+prev=""
+out=""
+for a in "$@"; do
+    if [ "${prev}" = "--output" ]; then out="${a}"; fi
+    prev="${a}"
+done
+[ -n "${out}" ] || { echo "fake-apk: no --output given: $*" >&2; exit 1; }
+printf 'FAKE-UNSIGNED-INDEX' > "${out}"
+EOF
+chmod +x "${H1_FAKE_APK}"
+
+# Real adb-sign.py stub: preimage/assemble/verify ALL succeed legitimately --
+# this arch's sign step is entirely valid; only check-monotonic (below) will
+# reject it. This is exactly the H1 scenario: a genuinely valid, H7-verified
+# signature that a downstream gate still must be able to reject without a
+# trace being left behind.
+H1_FAKE_ADB_SIGN="${H1_DIR}/bin/fake-adb-sign.py"
+cat > "${H1_FAKE_ADB_SIGN}" <<'EOF'
+#!/usr/bin/env python3
+import sys
+cmd = sys.argv[1]
+if cmd == "preimage":
+    with open(sys.argv[4], "wb") as f:
+        f.write(b"FAKE-PREIMAGE")
+elif cmd == "assemble":
+    unsigned, _pub, sig, out = sys.argv[2:6]
+    with open(unsigned, "rb") as f:
+        data = f.read()
+    with open(sig, "rb") as f:
+        sigdata = f.read()
+    with open(out, "wb") as f:
+        f.write(data + b"::SIGNED-OK::" + sigdata)
+elif cmd == "verify":
+    with open(sys.argv[2], "rb") as f:
+        data = f.read()
+    sys.exit(0 if b"SIGNED-OK" in data else 1)
+else:
+    sys.exit(2)
+EOF
+chmod +x "${H1_FAKE_ADB_SIGN}"
+
+# Real curl stub: the sign POST always succeeds with a well-formed
+# signature -- the retained-blob GET branch must never be reached here
+# because plan-retention (below) must never be called at all.
+H1_FAKE_CURL="${H1_DIR}/bin/curl"
+cat > "${H1_FAKE_CURL}" <<'EOF'
+#!/bin/sh
+OUT_FILE=""
+prev=""
+for a in "$@"; do
+    case "${prev}" in
+        -o) OUT_FILE="${a}" ;;
+    esac
+    prev="${a}"
+done
+case " $* " in
+    *" -X POST "*)
+        BODY='{"signature":"'"$(printf 'FAKESIG' | base64 -w0)"'"}'
+        if [ -n "${OUT_FILE}" ]; then printf '%s' "${BODY}" > "${OUT_FILE}"; else printf '%s' "${BODY}"; fi
+        ;;
+    *)
+        echo "h1-fake-curl: unexpected invocation: $*" >&2
+        exit 22
+        ;;
+esac
+EOF
+chmod +x "${H1_FAKE_CURL}"
+
+# Real feed-guard.sh stub: check-monotonic REJECTS (a real downgrade) --
+# the exact H1 scenario. plan-retention exits loudly/non-zero if ever
+# reached, proving the short-circuit still holds through this real-script
+# integration path too.
+H1_FAKE_FEED_GUARD="${H1_DIR}/bin/fake-feed-guard.sh"
+cat > "${H1_FAKE_FEED_GUARD}" <<'EOF'
+#!/bin/sh
+cmd="$1"; shift
+case "${cmd}" in
+    check-monotonic)
+        echo "feed-guard.sh: refusing to publish: not strictly greater than live (H1 test-injected rejection)" >&2
+        exit 1
+        ;;
+    plan-retention)
+        echo "H1 test FAIL: plan-retention must never be reached after a monotonic rejection" >&2
+        exit 9
+        ;;
+    *) exit 9 ;;
+esac
+EOF
+chmod +x "${H1_FAKE_FEED_GUARD}"
+
+BUILT_APKS_H1="${WORKDIR}/built-apks-h1"
+mk_built_apks "${BUILT_APKS_H1}" h1-core
+H1_SRC_APK=$(find "${BUILT_APKS_H1}" -type f -path "*/h1-core/*.apk")
+H1_PUBLISHED_NAME=$(basename "${H1_SRC_APK}")
+
+# --- 11a: cmd_worker itself must report this arch as failed, not checkpointed.
+PAGES_ROOT_H1A="${WORKDIR}/pages-root-h1a"
+RC=0
+PUBLISH_ARCH_SH="${REPO_ROOT}/scripts/publish-arch.sh" \
+    APK_BIN="${H1_FAKE_APK}" ADB_SIGN_PY="${H1_FAKE_ADB_SIGN}" FEED_GUARD="${H1_FAKE_FEED_GUARD}" \
+    PUBKEY_PATH="${H1_PUBKEY}" PATH="${H1_DIR}/bin:${PATH}" SIGN_RETRY_DELAY=0 \
+    "${PUBLISH_FEED}" --worker h1-core "${H1_SRC_APK}" "${H1_PUBLISHED_NAME}" "${PAGES_ROOT_H1A}" --tier core \
+    >"${WORKDIR}/h1a-worker.log" 2>&1 || RC=$?
+
+assert_eq "H1: --worker (driving the REAL publish-arch.sh) reports the monotonic rejection as a failure" "true" \
+    "$([ "${RC}" -ne 0 ] && echo true || echo false)"
+assert_eq "H1: no packages.adb is left at the final, checkpointable path despite the valid sign+H7-verify" "false" \
+    "$([ -f "${PAGES_ROOT_H1A}/apk/h1-core/packages.adb" ] && echo true || echo false)"
+
+# --- 11b: assemble's own final accounting (what actually decides what gets
+# deployed) must likewise never treat this as done -- a core arch stuck this
+# way must abort the WHOLE publish (RFC §5.4 all-or-nothing), never silently
+# ship a partially-rejected tree.
+PAGES_ROOT_H1B="${WORKDIR}/pages-root-h1b"
+RC=0
+PUBLISH_ARCH_SH="${REPO_ROOT}/scripts/publish-arch.sh" \
+    APK_BIN="${H1_FAKE_APK}" ADB_SIGN_PY="${H1_FAKE_ADB_SIGN}" FEED_GUARD="${H1_FAKE_FEED_GUARD}" \
+    PUBKEY_PATH="${H1_PUBKEY}" PATH="${H1_DIR}/bin:${PATH}" SIGN_RETRY_DELAY=0 \
+    TS_SIGN_CONCURRENCY=1 TS_PUBLISH_MAX_ROUNDS=1 TS_PUBLISH_ROUND_DELAY=0 \
+    "${PUBLISH_FEED}" assemble "$(arches_json h1-core:core)" "${BUILT_APKS_H1}" "${PAGES_ROOT_H1B}" \
+    >"${WORKDIR}/h1b-assemble.log" 2>&1 || RC=$?
+
+assert_eq "H1: assemble's final accounting fails the WHOLE publish (core arch never checkpoints, never silently deployed)" "true" \
+    "$([ "${RC}" -ne 0 ] && echo true || echo false)"
+assert_eq "H1: assemble never leaves a deployable packages.adb for the rejected core arch" "false" \
+    "$([ -f "${PAGES_ROOT_H1B}/apk/h1-core/packages.adb" ] && echo true || echo false)"
+
+echo
+
+# ===========================================================================
+# 12. H2 regression (diagnostics integrity): cmd_worker must propagate the
+#    REAL exit code of a genuinely failing (non-bootstrap) publish-arch.sh,
+#    not silently report success.
+# ===========================================================================
+echo "=== 12. H2 regression: cmd_worker propagates the real exit code on a non-bootstrap failure ==="
+
+BUILT_APKS_H2="${WORKDIR}/built-apks-h2"
+CALL_LOG_H2="${WORKDIR}/call-log-h2"
+: > "${CALL_LOG_H2}"
+mk_built_apks "${BUILT_APKS_H2}" h2-bad
+H2_APK=$(find "${BUILT_APKS_H2}" -type f -path "*/h2-bad/*.apk")
+H2_PUBLISHED_NAME=$(basename "${H2_APK}")
+
+PAGES_ROOT_H2="${WORKDIR}/pages-root-h2"
+RC=0
+CALL_LOG="${CALL_LOG_H2}" ALWAYS_FAIL_ARCHES="h2-bad" \
+    "${PUBLISH_FEED}" --worker h2-bad "${H2_APK}" "${H2_PUBLISHED_NAME}" "${PAGES_ROOT_H2}" --tier core \
+    >"${WORKDIR}/h2-worker.log" 2>&1 || RC=$?
+
+assert_eq "H2: --worker exits NON-ZERO for a genuinely failing (non-bootstrap) publish-arch.sh" "true" \
+    "$([ "${RC}" -ne 0 ] && echo true || echo false)"
+assert_contains "H2: the worker's own captured output still shows the underlying failure" \
+    "$(cat "${WORKDIR}/h2-worker.log")" "forced PERMANENT failure"
+assert_eq "H2: no packages.adb was produced for the failed arch" "false" \
+    "$([ -f "${PAGES_ROOT_H2}/apk/h2-bad/packages.adb" ] && echo true || echo false)"
 
 echo
 

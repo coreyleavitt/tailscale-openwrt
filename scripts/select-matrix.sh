@@ -76,10 +76,13 @@
 # Family rows (--compile-families) carry:
 #   { "family": "A64", "goarch": "arm64", "goarm": "", "gomips": "",
 #     "gomips64": "", "go386": "", "arches": ["aarch64_cortex-a53", ...] }
-# `family`/the build-tuple fields come from scripts/families.sh --id-for
-# (the single tested pure fn -- never re-derived here), so a family id is
-# never authored twice. `arches` is every gated row's name in that family,
-# sorted (content-derived, not row-order-derived, mirroring families.sh
+# `family`/the build-tuple fields come from scripts/families.sh
+# --compile-families (M5, code-review finding: this mode delegates the
+# gated-rows-to-family-groups transform wholesale, built on the same
+# build_family_rows() grouping --with-ci/--unverified-arches share -- never
+# an independently re-derived grouping loop here), so a family id is never
+# authored twice. `arches` is every gated row's name in that family, sorted
+# (content-derived, not row-order-derived, mirroring families.sh
 # --with-ci's own tie-break convention) -- this is what build-apk's in-job
 # packaging loop iterates.
 #
@@ -112,15 +115,34 @@ if [ ! -f "${ARCHES_JSON}" ]; then
     exit 1
 fi
 
+# --ipk-arches, non-PR: RFC non-goal -- ipk must NOT widen, pinned to
+# tier=="core" regardless of the compile_families/publish_arches gate-flip
+# below. M4 (code-review finding): "which arches are tier==core" is
+# scripts/families.sh --tier-arches's own accessor -- the single authored
+# place that predicate lives -- not a second `.tier == "core"` jq literal
+# here. Passing the literal string "core" (not some variable computed by
+# the gate-flip logic below) keeps this exactly as pinned/independent of
+# any future compile_families/publish_arches widening as before; only the
+# "which arches are tier==core right now" lookup itself is shared, never
+# reimplemented a 5th time (tests/apk/families.sh's M4 section
+# grep-guards the other four authored sites; this one is proven identical
+# by construction -- it calls the same accessor -- rather than by drift
+# test).
+if [ "${EVENT_NAME}" != "pull_request" ] && [ "${MODE}" = "ipk_arches" ]; then
+    if [ ! -x "${FAMILIES_SH}" ]; then
+        echo "select-matrix.sh: ${FAMILIES_SH} not found or not executable" >&2
+        exit 1
+    fi
+    CORE_NAMES_JSON=$("${FAMILIES_SH}" --tier-arches core "${ARCHES_JSON}" | jq -R . | jq -s .)
+    jq -c --argjson names "${CORE_NAMES_JSON}" \
+        '[.[] | select(.name as $n | $names | index($n) != null)]' "${ARCHES_JSON}"
+    exit 0
+fi
+
 if [ "${EVENT_NAME}" = "pull_request" ]; then
     GATE_FILTER='.canary == true'
 else
     case "${MODE}" in
-        ipk_arches)
-            # RFC non-goal: ipk must NOT widen -- pinned to tier=="core"
-            # regardless of the compile_families/publish_arches gate-flip.
-            GATE_FILTER='.tier == "core"'
-            ;;
         compile_families | publish_arches)
             # S5a gate-flip (RFC §5.8): every FEASIBLE arch, core-only filter
             # dropped. tier=="infeasible" rows (reason != null) are still
@@ -180,7 +202,14 @@ if [ "${MODE}" = "verify_families" ]; then
     exit 0
 fi
 
-# --compile-families from here down.
+# --compile-families from here down. M5 (code-review finding): the "gated
+# rows -> group by family -> tuple + sorted arch list" transform now
+# delegates WHOLESALE to families.sh --compile-families -- built on the
+# exact same build_family_rows() grouping --with-ci/--unverified-arches
+# already share -- the same way --verify-families above delegates to
+# families.sh --with-ci, instead of an independent "iterate rows ->
+# --id-for per row (a subprocess call per arch) -> group_by" loop
+# reimplemented here.
 
 if [ ! -x "${FAMILIES_SH}" ]; then
     echo "select-matrix.sh: ${FAMILIES_SH} not found or not executable" >&2
@@ -188,54 +217,8 @@ if [ ! -x "${FAMILIES_SH}" ]; then
 fi
 
 GATED=$(jq -c "[.[] | select(${GATE_FILTER})]" "${ARCHES_JSON}")
-COUNT=$(echo "${GATED}" | jq 'length')
-I=0
-ROWS_FILE=$(mktemp)
-trap 'rm -f "${ROWS_FILE}"' EXIT
+GATED_FILE=$(mktemp)
+trap 'rm -f "${GATED_FILE}"' EXIT
+echo "${GATED}" > "${GATED_FILE}"
 
-while [ "${I}" -lt "${COUNT}" ]; do
-    ROW=$(echo "${GATED}" | jq -c ".[${I}]")
-    I=$((I + 1))
-
-    NAME=$(echo "${ROW}" | jq -r '.name')
-    GOARCH=$(echo "${ROW}" | jq -r '.goarch // ""')
-    GOARM=$(echo "${ROW}" | jq -r '.goarm // ""')
-    GOMIPS=$(echo "${ROW}" | jq -r '.gomips // ""')
-    GOMIPS64=$(echo "${ROW}" | jq -r '.gomips64 // ""')
-    GO386=$(echo "${ROW}" | jq -r '.go386 // ""')
-
-    FAMILY=$("${FAMILIES_SH}" --id-for "${GOARCH}" "${GOARM}" "${GOMIPS}" "${GOMIPS64}" "${GO386}") || {
-        echo "select-matrix.sh --compile-families: arch '${NAME}' has an unmapped build tuple" >&2
-        exit 1
-    }
-
-    jq -n \
-        --arg family "${FAMILY}" \
-        --arg name "${NAME}" \
-        --arg goarch "${GOARCH}" \
-        --arg goarm "${GOARM}" \
-        --arg gomips "${GOMIPS}" \
-        --arg gomips64 "${GOMIPS64}" \
-        --arg go386 "${GO386}" \
-        '{family: $family, name: $name, goarch: $goarch, goarm: $goarm,
-          gomips: $gomips, gomips64: $gomips64, go386: $go386}' \
-        >> "${ROWS_FILE}"
-done
-
-# Group by family (content-derived, not insertion/row-order -- every row in
-# a family carries an identical build tuple by construction, so `.[0]`'s
-# tuple fields are the family's tuple). `arches` is sorted so the output is
-# independent of arches.json's row order.
-jq -s '
-    group_by(.family)
-    | map({
-        family: .[0].family,
-        goarch: .[0].goarch,
-        goarm: .[0].goarm,
-        gomips: .[0].gomips,
-        gomips64: .[0].gomips64,
-        go386: .[0].go386,
-        arches: ([.[].name] | sort)
-      })
-    | sort_by(.family)
-' "${ROWS_FILE}"
+"${FAMILIES_SH}" --compile-families "${GATED_FILE}"

@@ -205,12 +205,25 @@ cmd_worker() {
         return 0
     fi
 
-    if _out=$(sh "${PUBLISH_ARCH_SH}" "${_arch}" "${_apk_file}" "${_published_name}" "${_pages_root}" ${_force_args} 2>&1); then
-        printf '%s\n' "${_out}"
+    # H2 (code-review finding, diagnostics integrity): POSIX `$?` immediately
+    # after a failed `if COND; then ...; fi` with NO else branch is 0, NOT
+    # COND's own exit status (verified empirically in sh/dash/bash: nothing
+    # else ran in between, so `$?` reflects the `if` construct's own
+    # (successful, by definition of "no branch taken is not an error")
+    # completion -- not the failed condition). The old `if _out=$(...); then
+    # ...; fi; _rc=$?` here always set _rc=0, so a genuinely failing
+    # (non-bootstrap) publish-arch.sh made cmd_worker -- and therefore this
+    # script's own exit code under `--worker` -- report success, silently
+    # writing "OK" to the arch's .status file next to a die() in its .log.
+    # The `&&`/`||` guarded-assignment form captures the REAL exit status
+    # inline instead, and (per the same POSIX rule) does NOT itself trip
+    # `set -e` since the failure is part of an AND-OR list, not a bare
+    # simple command.
+    _out=$(sh "${PUBLISH_ARCH_SH}" "${_arch}" "${_apk_file}" "${_published_name}" "${_pages_root}" ${_force_args} 2>&1) && _rc=0 || _rc=$?
+    printf '%s\n' "${_out}"
+    if [ "${_rc}" -eq 0 ]; then
         return 0
     fi
-    _rc=$?
-    printf '%s\n' "${_out}"
 
     # S5b bootstrap-force (RFC §5.4/§5.8 S5b-PREREQ): an `extended` arch's
     # very FIRST publish has no live index yet, so feed-guard.sh
@@ -274,7 +287,16 @@ cmd_assemble() {
     # than after burning a full publish round on every other arch.
     [ -f "${ARCHES_JSON_PATH}" ] || die "assemble: committed arches.json not found at ${ARCHES_JSON_PATH} (set ARCHES_JSON_PATH)"
     _run_core=" $(echo "${_arches_json}" | jq -r '.[] | select((.tier // "core") == "core") | (.name // .)' | tr '\n' ' ')"
-    _committed_core=$(jq -r '.[] | select(.tier == "core") | (.name // .)' "${ARCHES_JSON_PATH}")
+    # M4 (code-review finding): "which arches are tier==core" in the
+    # COMMITTED table is scripts/families.sh --tier-arches's own accessor --
+    # the single authored place that predicate lives -- not a second
+    # `select(.tier == "core")` jq literal here. (`_run_core` above stays a
+    # local jq expression: it reads THIS RUN's already-in-memory
+    # `_arches_json` variable, not a committed file on disk, and its
+    # `.tier // "core"` default-to-core is a distinct policy -- rows with no
+    # `tier` field at all are still treated as core -- not the same
+    # predicate as the committed-table accessor.)
+    _committed_core=$(sh "${FAMILIES_SH}" --tier-arches core "${ARCHES_JSON_PATH}")
     _missing_core=""
     for _c in ${_committed_core}; do
         case "${_run_core}" in

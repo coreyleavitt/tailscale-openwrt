@@ -169,6 +169,16 @@ RUN curl -L "https://github.com/tailscale/tailscale/archive/refs/tags/v${TAILSCA
 # float ABI left unset also aborts loudly -- Go's silent default there is
 # hardfloat, which SIGILLs on softfloat MIPS/MIPS64 silicon (the same class
 # of live bug fixed for arm_cortex-a7, see §9).
+# GOARCH_VOCAB_CANONICAL (M6 code-review finding drift-guard anchor): this
+# exact vocabulary is ALSO hard-fail-guarded, independently, inside
+# scripts/families.sh's cmd_validate (it runs host-side, outside any
+# container, so it cannot exec into this build stage to share a runtime
+# function -- see that script's own matching GOARCH_VOCAB_CANONICAL marker
+# comment). tests/apk/dockerfile-goarch-drift.sh greps the first case-arm
+# line (`word|word|...) ;;` shape) after EACH marker in both files and
+# asserts the two pipe-delimited vocabularies are set-equal -- so a GOARCH
+# added here and forgotten there (or vice versa) fails CI instead of
+# silently diverging.
 WORKDIR /build/tailscale
 RUN case "${GOARCH}" in \
       arm64|arm|mips|mipsle|mips64|mips64le|386|amd64|riscv64|loong64) ;; \

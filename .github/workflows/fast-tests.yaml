@@ -1,0 +1,103 @@
+name: Fast Tests (Schema Guard + Pure-sh/jq Suites)
+
+# H3 (code-review finding, docs/rfc-apk-arch-coverage.md §5.2 "a typo hard-
+# fails CI, not the feed"): before this workflow existed, NOTHING in CI ever
+# ran `families.sh --validate` or almost any of tests/apk/* -- a bad
+# arches.json edit (a typo'd enum, an unmapped tuple, a shell-unsafe
+# `.name`, ...) went straight through to the 14-family docker build matrix
+# and a live feed publish with zero gate. This workflow is that gate: on
+# every push and pull_request, it runs the CHEAP, non-docker/non-qemu
+# guards (the schema validator + the pure-sh/jq test suites) so a bad edit
+# fails fast, in seconds, long before any build/publish job would ever see
+# it.
+#
+# Every suite listed in the `fast-tests` job below was verified to run
+# standalone, hermetically (no docker, no qemu, no live network) and pass
+# green on a clean checkout before being added here.
+#
+# `compile-negative` is a SEPARATE job: it's cheap in wall-clock terms
+# (jobs run in parallel, not gated behind fast-tests) but it needs docker +
+# network (it builds the real tailscale-package/Dockerfile `build` stage
+# against a pinned Tailscale source tarball) -- a materially different
+# dependency footprint than the pure-sh/jq suites above, so it stays a
+# separate, clearly-labeled job rather than folding into fast-tests' own
+# otherwise-hermetic step list.
+#
+# Deliberately NOT included in this workflow (not in scope for a "fast,
+# cheap, every-push" gate):
+#   - qemu/rootfs-boot verification (tests/apk/qemu.sh, rootfs.sh,
+#     fpu-sigill-smoke.sh, install-native-verify.sh, ...) -- needs
+#     --privileged docker + qemu-user binfmt registration, materially more
+#     expensive, and already exercised by build-tailscale.yaml's own
+#     qemu-verify job on every PR/dispatch.
+#   - tests/apk/install-dispatch.sh -- its Part 4 is a KNOWN pre-existing
+#     baseline failure, unrelated to arches.json/publish changes; wiring it
+#     in here would start this required gate red on day one, so it is left
+#     out until that pre-existing failure is fixed separately.
+#   - tests/apk/mkpkg.sh, host-apk.sh, instroot.sh, legacy-identical.sh,
+#     release-*.sh, upgrade-downgrade.sh, guard-hardening.sh,
+#     failure-isolation.sh, install.sh, install-verify.sh,
+#     apk-matrix.sh/ipk-matrix.sh -- docker/qemu-heavy or otherwise out of
+#     this workflow's cheap-guard scope; candidates for a follow-up
+#     "full/slow" required-checks workflow, not bundled in here.
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  fast-tests:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: families.sh --validate (arches.json schema guard -- M1's .name charclass check lives here)
+        run: sh scripts/families.sh --validate
+
+      - name: tests/apk/families.sh
+        run: sh tests/apk/families.sh
+
+      - name: tests/apk/select-matrix.sh
+        run: sh tests/apk/select-matrix.sh
+
+      - name: tests/apk/republish-arches.sh
+        run: sh tests/apk/republish-arches.sh
+
+      - name: tests/apk/publish-feed.sh
+        run: sh tests/apk/publish-feed.sh
+
+      - name: tests/apk/publish-arch.sh
+        run: sh tests/apk/publish-arch.sh
+
+      - name: tests/apk/install-arch-block.sh
+        run: sh tests/apk/install-arch-block.sh
+
+      - name: tests/apk/docs-arch-coverage.sh
+        run: sh tests/apk/docs-arch-coverage.sh
+
+      - name: tests/apk/arch-drift.sh
+        run: sh tests/apk/arch-drift.sh
+
+      - name: tests/apk/dockerfile-goarch-drift.sh
+        run: sh tests/apk/dockerfile-goarch-drift.sh
+
+  compile-negative:
+    # Separate job (docker + network dependency -- see file header above):
+    # builds the real tailscale-package/Dockerfile `build` stage against
+    # several deliberately-invalid GOARCH/GOMIPS/GOMIPS64 build-arg
+    # combinations and asserts each one hard-fails (the S2 negative test,
+    # RFC §5.1), plus two positive controls proving a valid tuple still
+    # builds. Runs in parallel with fast-tests, not gated behind it -- both
+    # jobs must succeed for this workflow to report green.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: tests/apk/compile-negative.sh
+        run: sh tests/apk/compile-negative.sh

@@ -41,6 +41,58 @@ if [ ! -f "${ARCHES_JSON}" ]; then
     exit 1
 fi
 
+# escape_for_dq value -- M3 (code-review finding): `.reason` is free-form
+# prose (not charclass-guarded like `.name` -- see scripts/families.sh
+# --validate's M1 check), and it gets spliced verbatim into a
+# double-quoted `echo "..."` argument in the GENERATED block below. A
+# reason containing `"` breaks OUT of that double-quoted string entirely
+# (everything after becomes live shell text -- e.g. a reason of
+# `x"; touch PWNED; echo "y` turns one echo call into three statements); a
+# reason containing `$` or a backtick stays inside the quotes but still
+# triggers command substitution. Escapes exactly the four characters POSIX
+# double-quotes still treat specially (backslash, double-quote, dollar,
+# backtick) so the emitted echo always prints the reason literally, no
+# matter what it contains -- order matters: backslash MUST be escaped
+# first, or a later pass would double-escape the backslashes it just
+# inserted for the other three characters.
+#
+# Deliberately keeps the `echo "%s"` shape (rather than switching to
+# `printf '%s\n' '...'` with single-quote wrapping) so this is a no-op for
+# every reason in the CURRENT table (none contain these four characters) --
+# the GENERATED block committed in scripts/install.sh stays byte-identical,
+# no companion install.sh regeneration required by this fix. See
+# tests/apk/install-arch-block.sh Part E for the injection-attempt
+# regression proof.
+escape_for_dq() {
+    printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/\$/\\$/g' -e 's/`/\\`/g'
+}
+
+# R2 (round-2 code-review finding, HIGH-adjacent companion to escape_for_dq
+# above): the row loop below used to extract `.name`/`.reason` with
+# `jq -r '"\(.name)\t\(.reason)"'` and split on tab. `-r` (raw output)
+# DECODES JSON string escapes back to raw bytes -- so a `.reason`
+# containing an embedded newline (a JSON-escaped `\n` inside the string)
+# came out as an actual newline byte, splitting into what `while IFS=<tab>
+# read` sees as an extra "row": everything after that embedded newline
+# (potentially including a hand-crafted `) touch PWNED ;;`-shaped payload)
+# spliced into the generated case statement as raw, un-escaped shell/case
+# syntax rather than as literal text inside one row's `echo "..."` argument.
+# families.sh --validate now rejects any `.reason`/`.name` containing a
+# newline or other control character at the source (R2a), but this
+# generator does not rely on that alone: iterating with `jq -c` (compact,
+# NOT `-r`) keeps every row's JSON string escaping intact, so an embedded
+# control character can never manifest as a raw delimiter here -- each
+# line read by the `while` loop below is always exactly one complete,
+# still-escaped JSON object, whatever text its fields contain. The per-
+# field values are then decoded (only) via a follow-up `jq -r` scoped to
+# that single already-isolated object.
+next_field() {
+    # next_field <json-object> <field> -- decode one field of an already-
+    # isolated single-line JSON object via a separate jq -r call (never via
+    # raw-mode string interpolation across an object boundary).
+    printf '%s' "$1" | jq -r --arg f "$2" '.[$f]'
+}
+
 echo "# >>> GENERATED infeasible-arch block (scripts/gen-install-arch-block.sh) -- do not edit by hand"
 echo "# Source: arches.json rows with reason != null (RFC docs/rfc-apk-arch-coverage.md"
 echo "# section 5.5). Regenerate via scripts/gen-install-arch-block.sh; drift from"
@@ -48,14 +100,16 @@ echo "# arches.json is caught by tests/apk/install-arch-block.sh."
 echo "infeasible_reason() {"
 echo "    case \"\$1\" in"
 
-jq -r '
+jq -c '
     [.[] | select(.reason != null)]
     | sort_by(.name)
     | .[]
-    | "\(.name)\t\(.reason)"
-' "${ARCHES_JSON}" | while IFS="$(printf '\t')" read -r _giab_name _giab_reason; do
+' "${ARCHES_JSON}" | while IFS= read -r _giab_row; do
+    _giab_name=$(next_field "${_giab_row}" name)
+    _giab_reason=$(next_field "${_giab_row}" reason)
+    _giab_escaped=$(escape_for_dq "${_giab_reason}")
     printf '        %s)\n' "${_giab_name}"
-    printf '            echo "%s"\n' "${_giab_reason}"
+    printf '            echo "%s"\n' "${_giab_escaped}"
     printf '            ;;\n'
 done
 

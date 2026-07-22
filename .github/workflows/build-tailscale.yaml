@@ -39,6 +39,27 @@ on:
           otherwise.
         required: false
         default: ''
+      republish_arches:
+        description: >-
+          RFC §5.8 "Rollback": optional arch-name allowlist for
+          republish-feed -- a space- or comma-separated list (e.g.
+          "riscv64_generic" or "riscv64_generic, aarch64_generic"). Leave
+          EMPTY for the default, UNCHANGED behavior: the 4 tier=="core"
+          arches (a normal core republish/rollback). A non-empty list
+          operates on EXACTLY those arches instead -- typically one or a
+          few `extended` arches, to roll back (or re-publish republish_tag
+          onto) a single bad arch WITHOUT looping the full arches.json and
+          force-downgrading the healthy core arches past the C3
+          monotonicity guard. Resolved + hard-validated by
+          scripts/families.sh --resolve-republish-arches
+          (tests/apk/republish-arches.sh): every name must be a real
+          FEASIBLE arch (tier core or extended) -- an unknown name or an
+          infeasible-tier name (e.g. powerpc_8548) fails the job before
+          any signing/publish. Combine with force_publish=true to
+          deliberately downgrade an extended arch's version. Only
+          meaningful when republish=true; ignored otherwise.
+        required: false
+        default: ''
   pull_request:
 
 jobs:
@@ -73,6 +94,18 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      # R4 (round-2 code-review finding, MEDIUM; originally H3): the real
+      # publish pipeline (this job -> the 14 build-apk family builds ->
+      # publish-feed) never ran the arches.json schema guard itself -- it
+      # only ran in the separate fast-tests.yaml workflow (push/PR), so a
+      # bad/typo'd/injection-shaped arches.json was only ever caught if
+      # fast-tests happened to be a REQUIRED branch-protection check, not by
+      # the pipeline's own structure. Running it here, first, sub-second,
+      # hard-fails the whole workflow before any build/publish spend --
+      # independent of branch protection configuration.
+      - name: Validate arches.json schema
+        run: sh scripts/families.sh --validate
 
       - name: Select build matrix
         id: select
@@ -1346,13 +1379,64 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # R3 (round-2 code-review finding, HIGH): `republish_tag` is a
+      # workflow_dispatch text input (operator-typed, not sanitized) --
+      # every site that reads it below resolves it through this input's own
+      # `env:` block and references it as an ordinary shell variable
+      # (`"${REPUBLISH_TAG}"`), never a raw `${{ }}` splice into the shell
+      # body. Mirrors exactly how `republish_arches` (RFC §5.8 "Rollback",
+      # round-2 B-SEV2) is already handled just below -- a raw splice here
+      # would let a crafted `republish_tag` value break out of shell
+      # quoting at every site that interpolates it, including the "Notify
+      # on apk feed republish failure" step, which runs with
+      # ALERT_WEBHOOK_URL in its environment (an injection there exfiltrates
+      # the alert webhook secret).
       - name: Validate republish inputs
+        env:
+          REPUBLISH_TAG: ${{ github.event.inputs.republish_tag }}
         run: |
           set -eu
-          if [ -z "${{ github.event.inputs.republish_tag }}" ]; then
+          if [ -z "${REPUBLISH_TAG}" ]; then
             echo "::error::republish=true requires republish_tag (e.g. v1.98.8) -- which release's already-built .apk assets to republish."
             exit 1
           fi
+
+      # RFC §5.8 "Rollback" (round-2 B-SEV2): resolve the optional
+      # republish_arches allowlist to the exact arch set this run operates
+      # on -- empty defaults to the historical tier=="core" set
+      # (BEHAVIOR-PRESERVING), non-empty is hard-validated against the
+      # FEASIBLE set (tier core or extended) and used EXACTLY as given.
+      # scripts/families.sh --resolve-republish-arches is the single seam
+      # this delegates to (tests/apk/republish-arches.sh exercises it
+      # directly, hermetically, outside a live Actions run) -- this step
+      # never re-derives the resolve/validate logic inline.
+      #
+      # Resolved into REPUBLISH_ARCHES via the input's own `env:` block
+      # (not a direct `${{ }}` splice into the script body) so an
+      # allowlist value can never break out of shell quoting here -- the
+      # resolver's OWN hard-validation below is what makes its stdout safe
+      # to later splice into a `for` loop, but the RAW input reaching that
+      # validation must itself arrive as an ordinary shell variable, not
+      # textually substituted YAML.
+      #
+      # Captured into a FILE (not just a step output) and read back via a
+      # plain assignment (`X=$(cat ...)`) at each of the two call sites
+      # below -- never `for arch in $(...)` directly. A command
+      # substitution's exit status is NOT checked by `set -e` when it's
+      # nested inside a `for` word-list expansion (only when it's the
+      # right-hand side of an assignment/simple command), so splicing the
+      # resolver straight into a `for` line would silently degrade a hard
+      # allowlist failure into a zero-arch loop instead of failing the job
+      # -- exactly the "silently publish nothing" outcome this input must
+      # never produce.
+      - name: Resolve + validate republish arch allowlist
+        env:
+          REPUBLISH_ARCHES: ${{ github.event.inputs.republish_arches }}
+        run: |
+          set -eu
+          sh scripts/families.sh --resolve-republish-arches "${REPUBLISH_ARCHES}" arches.json > republish-arches.txt
+          echo "Resolved republish arch set:"
+          cat republish-arches.txt
 
       # TODO(B4 human gate, RFC §4.2d): apk-signing.pem does not exist in
       # this repo yet -- same loud, deliberate failure as publish-feed's
@@ -1367,9 +1451,10 @@ jobs:
       - name: Download already-built .apk release assets
         env:
           GH_TOKEN: ${{ github.token }}
+          REPUBLISH_TAG: ${{ github.event.inputs.republish_tag }}
         run: |
           set -eu
-          TAG="${{ github.event.inputs.republish_tag }}"
+          TAG="${REPUBLISH_TAG}"
           mkdir -p republish-apks
           gh release download "${TAG}" \
             --repo ${{ github.repository }} \
@@ -1419,6 +1504,7 @@ jobs:
         env:
           FORCE_PUBLISH: ${{ github.event.inputs.force_publish }}
           IMPRIMATUR_AUTH_TOKEN: ${{ secrets.IMPRIMATUR_AUTH_TOKEN }}
+          REPUBLISH_TAG: ${{ github.event.inputs.republish_tag }}
         run: |
           set -eu
           PAGES_ROOT="${PWD}/pages-root"
@@ -1428,15 +1514,23 @@ jobs:
           FORCE_ARGS=""
           if [ "${FORCE_PUBLISH}" = "true" ]; then FORCE_ARGS="--force"; fi
 
-          # tier=="core" (RFC §5.8, slice S1c): arches.json widened to 35
-          # rows in S1b, 31 of which are gated inert (tier=="extended"/
-          # "infeasible", rootfs_url/container_arch still null -- pinning
-          # is deferred to S7a). Republish must iterate only the published
-          # production arches -- the same set select-matrix.sh's non-PR
-          # branch gates to -- not the full widened table.
-          for arch in $(jq -r '.[] | select(.tier == "core") | .name' arches.json); do
+          # RFC §5.8 "Rollback" (round-2 B-SEV2): iterate the resolved
+          # republish_arches allowlist -- the "Resolve + validate
+          # republish arch allowlist" step above, EMPTY defaults to the
+          # historical tier=="core" set (unchanged), a non-empty allowlist
+          # restricts this loop to EXACTLY those (hard-validated, FEASIBLE
+          # -- tier core or extended) arches instead, so a single bad
+          # `extended` arch can be rolled back without force-downgrading
+          # the healthy core arches past the monotonicity guard below.
+          #
+          # Read via a plain assignment, never `for arch in $(...)`
+          # directly -- see that step's own comment for why (a resolver
+          # failure inside a bare for-loop word-list substitution would
+          # not trip `set -e`).
+          RESOLVED_ARCHES=$(cat republish-arches.txt)
+          for arch in ${RESOLVED_ARCHES}; do
             APK_FILE=$(find republish-apks -maxdepth 1 -name "*-${arch}.apk" | head -1)
-            [ -n "${APK_FILE}" ] || { echo "::error::no republish .apk found for ${arch} among the ${{ github.event.inputs.republish_tag }} release assets (pattern *-${arch}.apk)"; exit 1; }
+            [ -n "${APK_FILE}" ] || { echo "::error::no republish .apk found for ${arch} among the ${REPUBLISH_TAG} release assets (pattern *-${arch}.apk)"; exit 1; }
             # De-arch-suffix the release asset's name
             # (tailscale-<ver>-r<rel>-<arch>.apk -> tailscale-<ver>-r<rel>.apk)
             # so the feed's filename convention matches a normal publish --
@@ -1465,9 +1559,14 @@ jobs:
       - name: Post-publish integrity verify (index-walk, §4.3)
         run: |
           set -eu
-          # tier=="core" (RFC §5.8, S1c) -- verify only the arches this
-          # republish actually published above, not the full 35-row table.
-          for arch in $(jq -r '.[] | select(.tier == "core") | .name' arches.json); do
+          # RFC §5.8 "Rollback" -- verify exactly the SAME resolved arch
+          # set the assemble step above just published (the file it wrote
+          # persists across steps in this job), not a re-derived or
+          # re-hardcoded set. Read via a plain assignment, never `for arch
+          # in $(...)` directly -- see the "Resolve + validate republish
+          # arch allowlist" step's own comment for why.
+          RESOLVED_ARCHES=$(cat republish-arches.txt)
+          for arch in ${RESOLVED_ARCHES}; do
             sh scripts/feed-guard.sh verify-tree "pages-root/apk/${arch}" "https://apk.leavitt.dev/apk/${arch}"
           done
 
@@ -1479,5 +1578,6 @@ jobs:
         if: failure()
         env:
           ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
+          REPUBLISH_TAG: ${{ github.event.inputs.republish_tag }}
         run: |
-          scripts/notify-alert.sh "republish-feed FAILED for ${{ github.event.inputs.republish_tag }} (run ${{ github.run_id }}, ${{ github.repository }})"
+          scripts/notify-alert.sh "republish-feed FAILED for ${REPUBLISH_TAG} (run ${{ github.run_id }}, ${{ github.repository }})"

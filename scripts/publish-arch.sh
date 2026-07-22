@@ -217,28 +217,63 @@ if [ -z "${SIG_B64}" ] || [ "${SIG_B64}" = "null" ]; then
 fi
 echo "${SIG_B64}" | base64 -d > "${ARCH_DIR}/sig.der"
 
+# H1 (code-review finding, checkpoint laundering): the freshly signed index
+# is assembled under a PENDING name (packages.adb.pending), never the final
+# `packages.adb` filename, until EVERY remaining gate below (H7 verify,
+# check-monotonic, plan-retention) has exited zero. Previously the signed
+# bytes landed at the FINAL path immediately after `assemble`, so a die()
+# from anything below (a real downgrade, or a core arch's "no live index"
+# case that isn't eligible for the extended-only bootstrap-force) left a
+# validly-signed, H7-verified packages.adb sitting at its final path anyway
+# -- publish-feed.sh's is_checkpointed() (packages.adb exists AND
+# cryptographically verifies) then read that REJECTED arch as done on the
+# next retry round or in final accounting, and it got deployed despite the
+# guard's rejection. The trap below guarantees the pending file never
+# lingers past this run even if the process is killed mid-pipeline (it's a
+# harmless no-op once the final `mv` below has already moved it away); the
+# `mv` is the ONLY place the final path is ever written, and it only runs
+# after every gate has passed.
+PENDING_ADB="${ARCH_DIR}/packages.adb.pending"
 python3 "${ADB_SIGN_PY}" assemble "${ARCH_DIR}/unsigned.adb" "${PUBKEY_PATH}" \
-    "${ARCH_DIR}/sig.der" "${ARCH_DIR}/packages.adb"
+    "${ARCH_DIR}/sig.der" "${PENDING_ADB}"
 rm -f "${ARCH_DIR}/unsigned.adb" "${ARCH_DIR}/preimage.bin" "${ARCH_DIR}/sig.der"
+trap 'rm -f "${AUTH_HEADER_FILE}" "${PENDING_ADB}"' EXIT
 
 # H7: hard, fail-closed gate -- verify the signature THIS run just produced
 # before any caller can reach a Pages deploy with it. Never trust
 # adb-sign.py assemble's own success alone (it only proves the framing was
 # written, not that the bytes cryptographically verify).
-if ! python3 "${ADB_SIGN_PY}" verify "${ARCH_DIR}/packages.adb" "${PUBKEY_PATH}"; then
+if ! python3 "${ADB_SIGN_PY}" verify "${PENDING_ADB}" "${PUBKEY_PATH}"; then
     die "post-assemble signature verification FAILED for ${ARCH} -- refusing to publish an unverifiable index (H7 fail-closed gate). Nothing was deployed."
 fi
 
 LIVE_URL="${LIVE_BASE_URL}/${ARCH}"
-sh "${FEED_GUARD}" check-monotonic "${ARCH_DIR}/packages.adb" "${LIVE_URL}/packages.adb" ${FORCE_FLAG}
+sh "${FEED_GUARD}" check-monotonic "${PENDING_ADB}" "${LIVE_URL}/packages.adb" ${FORCE_FLAG}
 
 RETAINED=$(sh "${FEED_GUARD}" plan-retention "${LIVE_URL}/retained.json" "${PUBLISHED_FILENAME}" --n "${RETAIN_N}")
 echo "${RETAINED}" > "${ARCH_DIR}/retained.json"
 for f in $(echo "${RETAINED}" | jq -r '.[]'); do
+    # M2 (code-review finding, path traversal): `f` comes from
+    # plan-retention, which is itself fed the LIVE, UNSIGNED
+    # retained.json -- untrusted input, unlike PUBLISHED_FILENAME (validated
+    # above). Apply the same no-path-separator guard here, plus a `..`
+    # guard, before ever using it in a filesystem path or curl -o target --
+    # a crafted entry like `../../evil` must never be able to write outside
+    # ARCH_DIR on a runner that holds contents:write + secrets.
+    case "${f}" in
+        */*|*..*|"")
+            die "plan-retention returned an unsafe retained filename '${f}' (contains a path separator or '..', or is empty) -- refusing to fetch outside ${ARCH_DIR} (M2 fail-closed guard)"
+            ;;
+    esac
     if [ ! -f "${ARCH_DIR}/${f}" ]; then
         curl -fsS -o "${ARCH_DIR}/${f}" "${LIVE_URL}/${f}" \
             || echo "::warning::could not carry forward retained blob ${f} for ${ARCH} (already gone from the live tree?)"
     fi
 done
+
+# Every gate above has passed -- publish the signed index at its final path
+# as the LAST possible step (H1): a failure anywhere above this line can
+# never leave a deployable/checkpointable packages.adb behind.
+mv "${PENDING_ADB}" "${ARCH_DIR}/packages.adb"
 
 echo "publish-arch.sh: ${ARCH} -> ${ARCH_DIR}/packages.adb (signature verified, monotonicity/retention OK)"
