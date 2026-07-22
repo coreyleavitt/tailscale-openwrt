@@ -75,12 +75,28 @@ FAKE_PUBLISH_ARCH="${WORKDIR}/bin/fake-publish-arch.sh"
 cat > "${FAKE_PUBLISH_ARCH}" <<'EOF'
 #!/bin/sh
 set -eu
-ARCH="$1"; PAGES_ROOT="$4"
+ARCH="$1"; PAGES_ROOT="$4"; FORCE_FLAG="${5:-}"
 echo "${ARCH}" >> "${CALL_LOG}"
+[ -n "${FORCE_CALL_LOG:-}" ] && echo "${ARCH} ${FORCE_FLAG}" >> "${FORCE_CALL_LOG}"
 
 if [ -n "${FAKE_PUBLISH_LATENCY:-}" ]; then
     sleep "${FAKE_PUBLISH_LATENCY}"
 fi
+
+# S5b bootstrap-force fixture: stands in for feed-guard.sh check-monotonic's
+# real "no live index" hard-error (exit 2, needs --force) on a genuine
+# first-ever publish -- fails with the SAME distinctive message real
+# feed-guard.sh's die() uses ("no live index found at") unless --force is
+# the exact 5th argument, in which case it proceeds as a normal first
+# publish. Space-separated arch list, mirrors ALWAYS_FAIL_ARCHES's convention.
+case " ${NO_LIVE_INDEX_ARCHES:-} " in
+    *" ${ARCH} "*)
+        if [ "${FORCE_FLAG}" != "--force" ]; then
+            echo "publish-arch.sh: feed-guard.sh: check-monotonic: no live index found at https://apk.leavitt.dev/apk/${ARCH}/packages.adb (HTTP 404 or missing local file) -- refusing to auto-allow a 'first publish' on an untrusted feed host without confirmation" >&2
+            exit 1
+        fi
+        ;;
+esac
 
 if [ -n "${FAIL_COUNT_DIR:-}" ] && [ -f "${FAIL_COUNT_DIR}/${ARCH}" ]; then
     N=$(cat "${FAIL_COUNT_DIR}/${ARCH}")
@@ -94,6 +110,15 @@ fi
 
 case " ${ALWAYS_FAIL_ARCHES:-} " in
     *" ${ARCH} "*)
+        # Mimic the REAL publish-arch.sh's own sequencing: it cp's the .apk
+        # into ARCH_DIR and starts mkndx BEFORE it can ever fail at a later
+        # stage (sign/verify/monotonic) -- so a permanently-failing arch can
+        # leave a partial (non-packages.adb) directory behind. Reproduced
+        # here so the S5b "dropped extended arch is fully cleaned up, not
+        # left as a half-write" assertion is a real proof, not a vacuous
+        # pass because nothing was ever written.
+        mkdir -p "${PAGES_ROOT}/apk/${ARCH}"
+        printf 'PARTIAL-UNSIGNED-%s' "${ARCH}" > "${PAGES_ROOT}/apk/${ARCH}/unsigned.adb"
         echo "fake-publish-arch: forced PERMANENT failure for ${ARCH}" >&2
         exit 1
         ;;
@@ -191,6 +216,37 @@ printf -- '-----BEGIN PUBLIC KEY-----\nDUMMY\n-----END PUBLIC KEY-----\n' > "${P
 export TS_PUBLISH_ROUND_DELAY=0
 export TS_VERIFY_SETTLE_DELAY=0
 
+# S5b depublish guard (RFC §5.4 round-2 B-SEV2): `assemble` diffs the run's
+# core arch-name set against a COMMITTED reference (the real arches.json in
+# production, default ARCHES_JSON_PATH) and hard-fails if a committed core
+# arch is about to silently vanish. Default here is an EMPTY committed set
+# (nothing to diff against -> the guard is inert) so every pre-existing test
+# below, none of which is about the depublish guard, is unaffected by its
+# introduction. Only section 9 (and any other test that cares) sets
+# ARCHES_JSON_PATH to a fixture with real entries via committed_core_json
+# below, to actually exercise the guard.
+DEFAULT_ARCHES_JSON_PATH="${WORKDIR}/arches-committed-default.json"
+echo '[]' > "${DEFAULT_ARCHES_JSON_PATH}"
+export ARCHES_JSON_PATH="${DEFAULT_ARCHES_JSON_PATH}"
+
+committed_core_json() {
+    # committed_core_json <arch...> -> writes an arches.json-shaped fixture
+    # (every given name at tier=="core") to a fresh temp file under WORKDIR
+    # and prints its path, for a test that wants the S5b depublish guard to
+    # see a REAL (non-empty) committed core set -- e.g. to assert the guard
+    # is a no-op when the run exactly covers it.
+    _f=$(mktemp "${WORKDIR}/committed-core-XXXXXX.json")
+    _json="["
+    _first=1
+    for _a in "$@"; do
+        [ "${_first}" -eq 1 ] || _json="${_json},"
+        _json="${_json}{\"name\":\"${_a}\",\"tier\":\"core\"}"
+        _first=0
+    done
+    echo "${_json}]" > "${_f}"
+    echo "${_f}"
+}
+
 mk_built_apks() {
     # mk_built_apks <dir> <arch...> -- lay out the S5a per-family artifact
     # shape (one arch subdir per gated arch; family grouping is irrelevant to
@@ -203,13 +259,22 @@ mk_built_apks() {
 }
 
 arches_json() {
-    # arches_json <arch...> -> a JSON array of {"name": "<arch>"} objects,
-    # the same shape select-matrix.sh's publish_arches output produces.
+    # arches_json <arch[:tier]...> -> a JSON array of {"name","tier"}
+    # objects, the same shape select-matrix.sh's publish_arches output
+    # produces (S5b: tier now carried through -- defaults to "core" when a
+    # bare name with no ":tier" suffix is given, so every pre-S5b test in
+    # this file that never mentions tier keeps its old strict/conservative
+    # all-or-nothing behavior unchanged).
     _json="["
     _first=1
     for _a in "$@"; do
+        _name="${_a%%:*}"
+        case "${_a}" in
+            *:*) _tier="${_a#*:}" ;;
+            *) _tier="core" ;;
+        esac
         [ "${_first}" -eq 1 ] || _json="${_json},"
-        _json="${_json}{\"name\":\"${_a}\"}"
+        _json="${_json}{\"name\":\"${_name}\",\"tier\":\"${_tier}\"}"
         _first=0
     done
     echo "${_json}]"
@@ -438,5 +503,174 @@ assert_contains "accumulate-all: final error names v-d TOO (complete failing set
 assert_contains "accumulate-all: notify-alert.sh WAS invoked" "$(cat "${NOTIFY_LOG_2}")" "MESSAGE:"
 assert_contains "accumulate-all: notify-alert.sh's message names v-b" "$(cat "${NOTIFY_LOG_2}")" "v-b"
 assert_contains "accumulate-all: notify-alert.sh's message names v-d TOO" "$(cat "${NOTIFY_LOG_2}")" "v-d"
+
+# ===========================================================================
+# 7. S5b: per-arch bootstrap-force via tier=="extended" (RFC §5.4/§5b-prereq)
+# ===========================================================================
+echo "=== 7. S5b: extended arch auto-bootstrap-forces on a genuine first publish (no live index); core does NOT ==="
+
+BUILT_APKS_7="${WORKDIR}/built-apks-7"
+PAGES_ROOT_7="${WORKDIR}/pages-root-7"
+CALL_LOG_7="${WORKDIR}/call-log-7"
+FORCE_CALL_LOG_7="${WORKDIR}/force-call-log-7"
+: > "${CALL_LOG_7}"
+: > "${FORCE_CALL_LOG_7}"
+mk_built_apks "${BUILT_APKS_7}" ext-new core-new
+
+RC=0
+CALL_LOG="${CALL_LOG_7}" FORCE_CALL_LOG="${FORCE_CALL_LOG_7}" NO_LIVE_INDEX_ARCHES="ext-new core-new" \
+    TS_SIGN_CONCURRENCY=2 TS_PUBLISH_MAX_ROUNDS=1 \
+    "${PUBLISH_FEED}" assemble "$(arches_json ext-new:extended core-new:core)" "${BUILT_APKS_7}" "${PAGES_ROOT_7}" \
+    >"${WORKDIR}/assemble-bootstrap.log" 2>&1 || RC=$?
+
+# core-new never gets auto-forced -- a missing core live-index is a real
+# error, so it stays failed after the single round and (pre-S5b atomicity
+# split, still all-or-nothing at this point) the whole assemble call fails.
+assert_eq "bootstrap-force: overall assemble still fails (core-new never bootstrapped)" "true" \
+    "$([ "${RC}" -ne 0 ] && echo true || echo false)"
+
+assert_eq "bootstrap-force: extended arch's packages.adb WAS written (auto-bootstrapped)" "true" \
+    "$([ -f "${PAGES_ROOT_7}/apk/ext-new/packages.adb" ] && echo true || echo false)"
+assert_eq "bootstrap-force: core arch's packages.adb was NEVER written (no auto-force for core)" "false" \
+    "$([ -f "${PAGES_ROOT_7}/apk/core-new/packages.adb" ] && echo true || echo false)"
+
+EXT_CALLS_7=$(grep -c '^ext-new$' "${CALL_LOG_7}")
+CORE_CALLS_7=$(grep -c '^core-new$' "${CALL_LOG_7}")
+assert_eq "bootstrap-force: ext-new invoked TWICE (1 no-force failure + 1 auto-forced success)" "2" "${EXT_CALLS_7}"
+assert_eq "bootstrap-force: core-new invoked ONCE (no auto-retry attempted for core)" "1" "${CORE_CALLS_7}"
+
+assert_contains "bootstrap-force: ext-new's first attempt had NO --force" "$(cat "${FORCE_CALL_LOG_7}")" "ext-new "
+assert_contains "bootstrap-force: ext-new's second attempt WAS auto-forced" "$(cat "${FORCE_CALL_LOG_7}")" "ext-new --force"
+assert_not_contains "bootstrap-force: core-new was NEVER auto-forced (tier scoping proof)" \
+    "$(cat "${FORCE_CALL_LOG_7}")" "core-new --force"
+
+echo
+
+# ===========================================================================
+# 8. S5b: core/extended atomicity split (RFC §5.4 round-2 B-SEV1/P-SEV2)
+# ===========================================================================
+echo "=== 8a. atomicity split: a failing CORE arch aborts the WHOLE assemble (non-zero), even with healthy extended arches ==="
+
+BUILT_APKS_8A="${WORKDIR}/built-apks-8a"
+PAGES_ROOT_8A="${WORKDIR}/pages-root-8a"
+CALL_LOG_8A="${WORKDIR}/call-log-8a"
+: > "${CALL_LOG_8A}"
+mk_built_apks "${BUILT_APKS_8A}" core-bad core-good ext-good
+
+RC=0
+CALL_LOG="${CALL_LOG_8A}" ALWAYS_FAIL_ARCHES="core-bad" TS_SIGN_CONCURRENCY=2 TS_PUBLISH_MAX_ROUNDS=2 \
+    "${PUBLISH_FEED}" assemble \
+    "$(arches_json core-bad:core core-good:core ext-good:extended)" "${BUILT_APKS_8A}" "${PAGES_ROOT_8A}" \
+    >"${WORKDIR}/assemble-8a.log" 2>&1 || RC=$?
+
+assert_eq "8a: a failing core arch aborts the ENTIRE assemble (non-zero exit)" "true" \
+    "$([ "${RC}" -ne 0 ] && echo true || echo false)"
+assert_contains "8a: names the failing core arch" "$(cat "${WORKDIR}/assemble-8a.log")" "core-bad"
+assert_eq "8a: the failing core arch never got a packages.adb" "false" \
+    "$([ -f "${PAGES_ROOT_8A}/apk/core-bad/packages.adb" ] && echo true || echo false)"
+assert_eq "8a: the OTHER (healthy) core arch still succeeded on disk" "true" \
+    "$([ -f "${PAGES_ROOT_8A}/apk/core-good/packages.adb" ] && echo true || echo false)"
+assert_eq "8a: the healthy extended arch also still succeeded on disk (core failure doesn't roll back others)" "true" \
+    "$([ -f "${PAGES_ROOT_8A}/apk/ext-good/packages.adb" ] && echo true || echo false)"
+
+echo
+
+echo "=== 8b. atomicity split: a failing EXTENDED arch is dropped (best-effort) -- assemble still exits 0 ==="
+
+BUILT_APKS_8B="${WORKDIR}/built-apks-8b"
+PAGES_ROOT_8B="${WORKDIR}/pages-root-8b"
+CALL_LOG_8B="${WORKDIR}/call-log-8b"
+: > "${CALL_LOG_8B}"
+mk_built_apks "${BUILT_APKS_8B}" core-ok ext-ok ext-bad
+
+RC=0
+CALL_LOG="${CALL_LOG_8B}" ALWAYS_FAIL_ARCHES="ext-bad" TS_SIGN_CONCURRENCY=2 TS_PUBLISH_MAX_ROUNDS=2 \
+    "${PUBLISH_FEED}" assemble \
+    "$(arches_json core-ok:core ext-ok:extended ext-bad:extended)" "${BUILT_APKS_8B}" "${PAGES_ROOT_8B}" \
+    >"${WORKDIR}/assemble-8b.log" 2>&1 || RC=$?
+
+assert_eq "8b: a failing EXTENDED arch does NOT abort the deploy (assemble exits 0)" "0" "${RC}"
+assert_contains "8b: loudly logs the dropped extended arch" "$(cat "${WORKDIR}/assemble-8b.log")" "ext-bad"
+assert_eq "8b: the failed extended arch's directory is fully ABSENT from the tree (clean drop, not a half-write)" "false" \
+    "$([ -d "${PAGES_ROOT_8B}/apk/ext-bad" ] && echo true || echo false)"
+assert_eq "8b: core arch present" "true" \
+    "$([ -f "${PAGES_ROOT_8B}/apk/core-ok/packages.adb" ] && echo true || echo false)"
+assert_eq "8b: the OTHER (healthy) extended arch is present" "true" \
+    "$([ -f "${PAGES_ROOT_8B}/apk/ext-ok/packages.adb" ] && echo true || echo false)"
+
+echo
+
+echo "=== 8c. atomicity split: core + all healthy extended succeed -> full tree, exit 0 ==="
+
+BUILT_APKS_8C="${WORKDIR}/built-apks-8c"
+PAGES_ROOT_8C="${WORKDIR}/pages-root-8c"
+CALL_LOG_8C="${WORKDIR}/call-log-8c"
+: > "${CALL_LOG_8C}"
+mk_built_apks "${BUILT_APKS_8C}" core-1 core-2 ext-1 ext-2
+
+RC=0
+CALL_LOG="${CALL_LOG_8C}" TS_SIGN_CONCURRENCY=2 \
+    "${PUBLISH_FEED}" assemble \
+    "$(arches_json core-1:core core-2:core ext-1:extended ext-2:extended)" "${BUILT_APKS_8C}" "${PAGES_ROOT_8C}" \
+    >"${WORKDIR}/assemble-8c.log" 2>&1 || RC=$?
+
+assert_eq "8c: full success -> exit 0" "0" "${RC}"
+for a in core-1 core-2 ext-1 ext-2; do
+    assert_eq "8c: ${a} present in the assembled tree" "true" \
+        "$([ -f "${PAGES_ROOT_8C}/apk/${a}/packages.adb" ] && echo true || echo false)"
+done
+
+echo
+
+# ===========================================================================
+# 9. S5b: depublish guard (RFC §5.4 round-2 B-SEV2)
+# ===========================================================================
+echo "=== 9. depublish guard: a committed core arch silently missing from the run hard-fails; --allow-depublish overrides it ==="
+
+BUILT_APKS_9="${WORKDIR}/built-apks-9"
+PAGES_ROOT_9A="${WORKDIR}/pages-root-9a"
+CALL_LOG_9A="${WORKDIR}/call-log-9a"
+: > "${CALL_LOG_9A}"
+mk_built_apks "${BUILT_APKS_9}" dep-a
+
+# Committed reference: dep-a AND dep-b are both tier=="core" -- but this
+# run's arch list (below) only carries dep-a, mimicking a bad merge/typo'd
+# rename/over-eager prune that silently drops dep-b from arches.json's
+# gated set.
+ARCHES_JSON_PATH_9="${WORKDIR}/arches-committed-9.json"
+jq -n '[{name:"dep-a",tier:"core"},{name:"dep-b",tier:"core"}]' > "${ARCHES_JSON_PATH_9}"
+
+RC=0
+CALL_LOG="${CALL_LOG_9A}" ARCHES_JSON_PATH="${ARCHES_JSON_PATH_9}" \
+    "${PUBLISH_FEED}" assemble "$(arches_json dep-a:core)" "${BUILT_APKS_9}" "${PAGES_ROOT_9A}" \
+    >"${WORKDIR}/assemble-9a.log" 2>&1 || RC=$?
+
+assert_eq "9a: a silently-missing committed core arch hard-fails assemble" "true" \
+    "$([ "${RC}" -ne 0 ] && echo true || echo false)"
+assert_contains "9a: names the missing core arch" "$(cat "${WORKDIR}/assemble-9a.log")" "dep-b"
+assert_contains "9a: points at --allow-depublish as the deliberate override" \
+    "$(cat "${WORKDIR}/assemble-9a.log")" "allow-depublish"
+assert_eq "9a: fails BEFORE any signing work is dispatched (fail-fast pre-check)" "" \
+    "$(cat "${CALL_LOG_9A}")"
+
+echo
+
+PAGES_ROOT_9B="${WORKDIR}/pages-root-9b"
+CALL_LOG_9B="${WORKDIR}/call-log-9b"
+: > "${CALL_LOG_9B}"
+
+RC=0
+CALL_LOG="${CALL_LOG_9B}" ARCHES_JSON_PATH="${ARCHES_JSON_PATH_9}" \
+    "${PUBLISH_FEED}" assemble "$(arches_json dep-a:core)" "${BUILT_APKS_9}" "${PAGES_ROOT_9B}" \
+    --allow-depublish dep-b \
+    >"${WORKDIR}/assemble-9b.log" 2>&1 || RC=$?
+
+assert_eq "9b: --allow-depublish dep-b lets the SAME scenario proceed (exit 0)" "0" "${RC}"
+assert_contains "9b: logs a loud warning that dep-b was deliberately depublished" \
+    "$(cat "${WORKDIR}/assemble-9b.log")" "dep-b"
+assert_eq "9b: dep-a still published normally" "true" \
+    "$([ -f "${PAGES_ROOT_9B}/apk/dep-a/packages.adb" ] && echo true || echo false)"
+
+echo
 
 harness_finish "tests/apk/publish-feed.sh"

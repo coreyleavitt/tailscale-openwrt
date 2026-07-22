@@ -235,6 +235,59 @@ done
 echo
 
 # ===========================================================================
+# 3b. S5b: republish-feed rollback allowlist -- "rollback only ever touches
+# core" (RFC §5.8 rollback note + S5b deliverable 4).
+# ===========================================================================
+#
+# The RFC's §5.8 rollback note asks for an "arch-allowlist input" so
+# republish-feed can't silently drop a live core arch. Investigating
+# republish-feed's ACTUAL shape (both loops below): it already hardcodes
+# `select(.tier == "core")` straight off arches.json for BOTH the
+# assemble+sign+guard+retain loop and the post-publish verify loop -- it
+# unconditionally republishes the WHOLE committed core set every run, never
+# a caller-supplied subset. That means there is no code path by which a
+# republish can drop ONE core arch while keeping others (the exact
+# "allowlist" hazard the RFC note is guarding against) -- the depublish risk
+# an allowlist-style input would create (a partial/stale allowlist silently
+# omitting an arch) cannot arise because no allowlist input exists to go
+# stale. Per this slice's own instructions: "if the existing filter already
+# fully satisfies 'rollback only touches core,' assert that with a test and
+# note it -- don't manufacture new mechanism." Asserted here rather than
+# adding a new (redundant, and itself a new drift-risk) allowlist mechanism.
+echo "=== 3b. S5b: republish-feed's rollback is already core-only in BOTH loops (no allowlist mechanism needed) ==="
+
+REPUBLISH_STRUCT_JSON=$(python3 - "${BUILD_WORKFLOW}" <<'PYEOF'
+import sys, json, yaml
+with open(sys.argv[1]) as f:
+    doc = yaml.safe_load(f)
+jobs = doc.get("jobs", {}) or {}
+rf_job = jobs.get("republish-feed", {}) or {}
+
+def run_text(step_name_substr):
+    for step in rf_job.get("steps", []) or []:
+        if step_name_substr in str(step.get("name", "")):
+            return str(step.get("run", ""))
+    return ""
+
+result = {
+    "assemble_step_run": run_text("Assemble"),
+    "verify_step_run": run_text("verify"),
+}
+print(json.dumps(result))
+PYEOF
+)
+
+ASSEMBLE_RUN=$(echo "${REPUBLISH_STRUCT_JSON}" | jq -r '.assemble_step_run')
+VERIFY_RUN=$(echo "${REPUBLISH_STRUCT_JSON}" | jq -r '.verify_step_run')
+
+assert_contains "republish-feed's assemble+sign+guard+retain loop filters arches.json to tier==\"core\" only" \
+    "${ASSEMBLE_RUN}" 'select(.tier == "core")'
+assert_contains "republish-feed's post-publish verify loop ALSO filters to tier==\"core\" only" \
+    "${VERIFY_RUN}" 'select(.tier == "core")'
+
+echo
+
+# ===========================================================================
 # YAML well-formedness (both workflows)
 # ===========================================================================
 echo "=== YAML well-formed (both workflows) ==="

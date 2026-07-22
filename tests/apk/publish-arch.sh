@@ -349,6 +349,14 @@ assert_contains "happy path: feed-guard.sh was called for check-monotonic" \
 assert_contains "happy path: feed-guard.sh was called for plan-retention" \
     "$(cat "${FEED_GUARD_LOG}")" "plan-retention"
 
+# S5b (RFC §5.7 retention measurement): the DEFAULT RETAIN_N (no override)
+# must be the deliberately-chosen value, not left at the pre-widening
+# default -- see publish-arch.sh's own header comment for the measured-size
+# arithmetic behind this exact number.
+PLAN_RETENTION_LINE=$(grep '^plan-retention' "${FEED_GUARD_LOG}" || true)
+assert_contains "happy path: default RETAIN_N (no override) is the deliberately-chosen value" \
+    "${PLAN_RETENTION_LINE}" "--n 2"
+
 echo
 
 # ===========================================================================

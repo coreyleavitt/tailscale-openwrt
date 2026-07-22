@@ -41,18 +41,47 @@
 #      failed, and the COMPLETE failing set reported to notify-alert.sh at
 #      the end -- never `set -e` out on arch #3 and skip #4-30.
 #
-# core/extended ATOMICITY SPLIT (RFC §5.4 round-2 B-SEV1/P-SEV2) is
-# DELIBERATELY NOT implemented here -- that is slice S5b. `assemble` stays
-# all-or-nothing: if any arch is still unchecked-off after
-# TS_PUBLISH_MAX_ROUNDS, `assemble` exits non-zero (same net effect as
-# today's plain `set -eu` loop it replaces), so the workflow's subsequent
-# Pages-deploy steps never run. Only the MECHANICS below are new -- the
-# publish decision (all arches or none) is unchanged.
+# S5b (RFC §5.4/§5.8, docs/rfc-apk-arch-coverage.handoff.md's "S5b-PREREQ"
+# note) adds four more things on top of S5a's mechanics, all keyed off each
+# row's `tier` field (core|extended):
+#
+#   4. PER-ARCH BOOTSTRAP-FORCE for `tier=="extended"`. A newly-widened
+#      extended arch's very FIRST publish has no live index yet, so
+#      feed-guard.sh check-monotonic's own bootstrap check hard-errors
+#      ("no live index found at ...", needs --force) -- expected, not a real
+#      problem. `--worker` detects exactly this failure signature and
+#      retries ONLY that one arch with --force, scoped strictly to
+#      tier=="extended" -- retiring the coarse global `force_publish=true`
+#      interim the S5a handoff flagged (which would also force a genuinely
+#      broken `core` arch past its monotonicity guard). A `core` arch
+#      hitting the identical message is a real error (a live core arch's
+#      index vanishing is never expected) and is left to fail normally.
+#   5. CORE/EXTENDED ATOMICITY SPLIT (RFC §5.4 round-2 B-SEV1/P-SEV2,
+#      revising round 1's flat "atomicity holds"). `assemble`'s final
+#      accounting now splits by tier: a still-failing `core` arch after
+#      TS_PUBLISH_MAX_ROUNDS is FATAL (die(), non-zero exit, BEFORE the
+#      caller's subsequent Pages-deploy steps ever run -- core stays
+#      all-or-nothing, production is never half-updated); a still-failing
+#      `extended` arch is BEST-EFFORT -- logged loudly, its directory fully
+#      removed from the tree (never a half-signed leftover from a late-stage
+#      failure), and `assemble` still exits 0 with everything else that
+#      succeeded. The single atomic `deploy-pages` step downstream is
+#      unchanged -- only "which arches are in the tree it deploys" varies.
+#   6. DEPUBLISH GUARD (RFC §5.4 round-2 B-SEV2). Before any signing work is
+#      dispatched, `assemble` diffs the run's `tier=="core"` arch set
+#      against the COMMITTED `tier=="core"` set in ARCHES_JSON_PATH (default:
+#      the checked-out arches.json) and hard-fails if a committed core arch
+#      is about to silently vanish from this run (bad merge, typo'd rename,
+#      over-eager prune) -- unless every missing one is covered by an
+#      explicit `--allow-depublish <arch>` (repeatable), for a deliberate
+#      arch retirement (RFC §5.7 decommission runbook, S9).
 #
 # Usage:
-#   publish-feed.sh assemble <arches-json> <built-apks-dir> <pages-root> [--force]
+#   publish-feed.sh assemble <arches-json> <built-apks-dir> <pages-root> \
+#       [--force] [--allow-depublish <arch>]...
 #   publish-feed.sh verify <arches-json> <pages-root> <base-url>
-#   publish-feed.sh --worker <arch> <apk-file> <published-filename> <pages-root> [--force]
+#   publish-feed.sh --worker <arch> <apk-file> <published-filename> <pages-root> \
+#       [--force] [--tier <core|extended>]
 #       (INTERNAL -- the bounded-concurrency fan-out re-invokes this script
 #       as its own worker, since POSIX sh/dash cannot export a shell
 #       function into a subprocess spawned by `xargs -P`. Not intended to be
@@ -90,6 +119,9 @@
 #                             `verify` counts it as truly failed (default 5)
 #   TS_VERIFY_SETTLE_DELAY    seconds between settle retries (default 3;
 #                             tests set 0)
+#   ARCHES_JSON_PATH          committed arch table the depublish guard reads
+#                             tier=="core" names from (default:
+#                             <repo-root>/arches.json)
 #   (publish-arch.sh's own APK_BIN/SIGN_URL/LIVE_BASE_URL/etc env overrides
 #   pass through unchanged -- this script never shadows them.)
 set -eu
@@ -108,6 +140,12 @@ ADB_SIGN_PY="${ADB_SIGN_PY:-${REPO_ROOT}/scripts/adb-sign.py}"
 PUBKEY_PATH="${PUBKEY_PATH:-${REPO_ROOT}/apk-signing.pem}"
 FEED_GUARD="${FEED_GUARD:-${REPO_ROOT}/scripts/feed-guard.sh}"
 NOTIFY_ALERT="${NOTIFY_ALERT:-${REPO_ROOT}/scripts/notify-alert.sh}"
+# S5b depublish guard (RFC §5.4 round-2 B-SEV2): the COMMITTED reference
+# `assemble` diffs the run's core arch set against -- defaults to the real
+# checked-out arches.json (the production case needs no wiring: CI already
+# runs this script from a checkout that has it at the repo root). Tests
+# point this at a small fixture instead.
+ARCHES_JSON_PATH="${ARCHES_JSON_PATH:-${REPO_ROOT}/arches.json}"
 
 [ -f "${PUBLISH_ARCH_SH}" ] || die "publish-arch.sh not found: ${PUBLISH_ARCH_SH}"
 
@@ -126,12 +164,14 @@ is_checkpointed() {
 # --worker (internal): publish exactly one arch, honoring the checkpoint.
 # =========================================================================
 cmd_worker() {
-    [ $# -ge 4 ] || die "--worker usage: --worker <arch> <apk-file> <published-filename> <pages-root> [--force]"
+    [ $# -ge 4 ] || die "--worker usage: --worker <arch> <apk-file> <published-filename> <pages-root> [--force] [--tier <tier>]"
     _arch="$1"; _apk_file="$2"; _published_name="$3"; _pages_root="$4"; shift 4
     _force_args=""
+    _tier="core"
     while [ $# -gt 0 ]; do
         case "$1" in
             --force) _force_args="--force"; shift ;;
+            --tier) _tier="$2"; shift 2 ;;
             *) die "--worker: unknown argument '$1'" ;;
         esac
     done
@@ -141,19 +181,51 @@ cmd_worker() {
         return 0
     fi
 
-    sh "${PUBLISH_ARCH_SH}" "${_arch}" "${_apk_file}" "${_published_name}" "${_pages_root}" ${_force_args}
+    if _out=$(sh "${PUBLISH_ARCH_SH}" "${_arch}" "${_apk_file}" "${_published_name}" "${_pages_root}" ${_force_args} 2>&1); then
+        printf '%s\n' "${_out}"
+        return 0
+    fi
+    _rc=$?
+    printf '%s\n' "${_out}"
+
+    # S5b bootstrap-force (RFC §5.4/§5.8 S5b-PREREQ): an `extended` arch's
+    # very FIRST publish has no live index yet, so feed-guard.sh
+    # check-monotonic's own "no live index" bootstrap check hard-errors
+    # (needs --force) -- expected, not a real problem, for exactly the 26
+    # newly-widened extended arches on their first-ever run. Rather than the
+    # coarse global `force_publish=true` interim (which would also force-
+    # downgrade a genuinely-broken `core` arch past its monotonicity guard),
+    # detect THIS specific failure signature and retry ONLY this one arch
+    # with --force -- scoped strictly to tier=="extended"; a `core` arch
+    # hitting the identical message is a real error (a live core arch's
+    # index vanishing is never expected) and is deliberately left to fail
+    # through to the normal round/retry accounting untouched.
+    if [ -z "${_force_args}" ] && [ "${_tier}" = "extended" ] \
+        && printf '%s' "${_out}" | grep -q "no live index found at"; then
+        echo "publish-feed.sh --worker: ${_arch} (tier=extended) has no live index yet -- auto-bootstrap-forcing this arch's first publish (RFC §5.4 S5b)"
+        sh "${PUBLISH_ARCH_SH}" "${_arch}" "${_apk_file}" "${_published_name}" "${_pages_root}" --force
+        return $?
+    fi
+
+    return "${_rc}"
 }
 
 # =========================================================================
 # assemble
 # =========================================================================
 cmd_assemble() {
-    [ $# -ge 3 ] || die "assemble usage: assemble <arches-json> <built-apks-dir> <pages-root> [--force]"
+    [ $# -ge 3 ] || die "assemble usage: assemble <arches-json> <built-apks-dir> <pages-root> [--force] [--allow-depublish <arch>]..."
     _arches_json="$1"; _built_apks_dir="$2"; _pages_root="$3"; shift 3
     _force_args=""
+    _allow_depublish=""
     while [ $# -gt 0 ]; do
         case "$1" in
             --force) _force_args="--force"; shift ;;
+            --allow-depublish)
+                [ $# -ge 2 ] || die "assemble: --allow-depublish requires an <arch> argument"
+                _allow_depublish="${_allow_depublish}$2 "
+                shift 2
+                ;;
             *) die "assemble: unknown argument '$1'" ;;
         esac
     done
@@ -169,13 +241,54 @@ cmd_assemble() {
     _arch_names=$(echo "${_arches_json}" | jq -r '.[] | (.name // .)')
     [ -n "${_arch_names}" ] || die "assemble: empty arch list"
 
+    # S5b depublish guard (RFC §5.4 round-2 B-SEV2): a `core` arch that is
+    # committed (arches.json, ARCHES_JSON_PATH) but silently absent from
+    # THIS run's arch set (bad merge, typo'd rename, over-eager prune) would
+    # otherwise un-publish a live production arch the next time GH Pages
+    # replaces the whole tree -- checked FIRST, before any signing work is
+    # dispatched, so a structural mistake like this is caught cheaply rather
+    # than after burning a full publish round on every other arch.
+    [ -f "${ARCHES_JSON_PATH}" ] || die "assemble: committed arches.json not found at ${ARCHES_JSON_PATH} (set ARCHES_JSON_PATH)"
+    _run_core=" $(echo "${_arches_json}" | jq -r '.[] | select((.tier // "core") == "core") | (.name // .)' | tr '\n' ' ')"
+    _committed_core=$(jq -r '.[] | select(.tier == "core") | (.name // .)' "${ARCHES_JSON_PATH}")
+    _missing_core=""
+    for _c in ${_committed_core}; do
+        case "${_run_core}" in
+            *" ${_c} "*) ;;  # still present in this run -- fine
+            *) _missing_core="${_missing_core}${_c} " ;;
+        esac
+    done
+    if [ -n "${_missing_core}" ]; then
+        _unallowed=""
+        for _c in ${_missing_core}; do
+            case " ${_allow_depublish} " in
+                *" ${_c} "*)
+                    echo "publish-feed.sh assemble: WARNING -- deliberately depublishing committed core arch '${_c}' (--allow-depublish given; RFC §5.4/§5.7 decommission runbook)" >&2
+                    ;;
+                *) _unallowed="${_unallowed}${_c} " ;;
+            esac
+        done
+        [ -z "${_unallowed}" ] || die "assemble: committed core arch(es) missing from this run and NOT covered by --allow-depublish: ${_unallowed}-- refusing to silently depublish a live arch. If this is a deliberate retirement, pass --allow-depublish <arch> for each one."
+    fi
+
+    # Per-arch tier map ("<name> <tier>" lines, one per gated arch), read by
+    # the xargs-spawned worker dispatch below to pass --tier through to
+    # cmd_worker (S5b bootstrap-force keys off this). A row with no `tier`
+    # field defaults to "core" -- the strictest/safest reading, so an input
+    # that predates the tier field (or a bare-string arch list) gets the
+    # conservative all-or-nothing treatment rather than silently becoming
+    # best-effort.
+    _tier_map=$(mktemp)
+    echo "${_arches_json}" | jq -r '.[] | "\(.name // .) \(.tier // "core")"' > "${_tier_map}"
+
     _status_dir=$(mktemp -d)
-    trap 'rm -rf "${_status_dir}"' EXIT
+    trap 'rm -rf "${_status_dir}" "${_tier_map}"' EXIT
 
     export STATUS_DIR="${_status_dir}"
     export BUILT_APKS_DIR="${_built_apks_dir}"
     export PAGES_ROOT_ARG="${_pages_root}"
     export FORCE_ARGS_ENV="${_force_args}"
+    export TIER_MAP="${_tier_map}"
     export PUBLISH_ARCH_SH ADB_SIGN_PY PUBKEY_PATH SELF
 
     _round=1
@@ -203,7 +316,9 @@ cmd_assemble() {
                 exit 0
             fi
             published_name=$(basename "${apk_file}")
-            if "${SELF}" --worker "${arch}" "${apk_file}" "${published_name}" "${PAGES_ROOT_ARG}" ${FORCE_ARGS_ENV} \
+            tier=$(awk -v a="${arch}" "\$1==a{print \$2; exit}" "${TIER_MAP}")
+            [ -n "${tier}" ] || tier="core"
+            if "${SELF}" --worker "${arch}" "${apk_file}" "${published_name}" "${PAGES_ROOT_ARG}" ${FORCE_ARGS_ENV} --tier "${tier}" \
                 > "${STATUS_DIR}/${arch}.log" 2>&1; then
                 echo "OK" > "${STATUS_DIR}/${arch}.status"
             else
@@ -222,25 +337,45 @@ cmd_assemble() {
     done
 
     # Final accounting: accumulate the COMPLETE failing set (never abort
-    # mid-loop) -- see the header note on why this stays all-or-nothing at
-    # this slice (S5b implements the core/extended split).
-    _failed=""
-    _failed_count=0
+    # mid-loop), then apply the S5b core/extended ATOMICITY SPLIT (RFC §5.4
+    # round-2 B-SEV1/P-SEV2) -- a still-failing `core` arch is fatal (the
+    # whole publish aborts, non-zero exit, BEFORE the caller's subsequent
+    # Pages-deploy steps ever run -- production is never half-updated), but a
+    # still-failing `extended` arch is best-effort: log it loudly, DROP it
+    # from this publish (its directory is fully removed -- see below -- so a
+    # partial/half-signed write from a late-stage failure, e.g. a rejected
+    # monotonicity check after the .apk was already copied in, never lingers
+    # in the tree that DOES get deployed), and let the deploy proceed with
+    # everything else that succeeded.
+    _failed_core=""
+    _dropped_extended=""
     for _arch in ${_arch_names}; do
         if ! is_checkpointed "${_arch}" "${_pages_root}"; then
-            _failed="${_failed}${_arch} "
-            _failed_count=$((_failed_count + 1))
-            if [ -f "${_status_dir}/${_arch}.status" ]; then
-                echo "publish-feed.sh assemble: ${_arch}: $(cat "${_status_dir}/${_arch}.status")" >&2
+            _tier=$(awk -v a="${_arch}" '$1==a{print $2; exit}' "${_tier_map}")
+            [ -n "${_tier}" ] || _tier="core"
+            if [ "${_tier}" = "extended" ]; then
+                echo "publish-feed.sh assemble: WARNING -- extended arch '${_arch}' still failing after ${_max_rounds} round(s); DROPPING it from this publish (best-effort, RFC §5.4) rather than aborting the whole deploy:" >&2
+                [ -f "${_status_dir}/${_arch}.status" ] && echo "  ${_arch}: $(cat "${_status_dir}/${_arch}.status")" >&2
+                rm -rf "${_pages_root}/apk/${_arch}"
+                _dropped_extended="${_dropped_extended}${_arch} "
+            else
+                _failed_core="${_failed_core}${_arch} "
+                if [ -f "${_status_dir}/${_arch}.status" ]; then
+                    echo "publish-feed.sh assemble: ${_arch}: $(cat "${_status_dir}/${_arch}.status")" >&2
+                fi
             fi
         fi
     done
 
-    if [ "${_failed_count}" -gt 0 ]; then
-        die "assemble: ${_failed_count} arch(es) still failing after ${_max_rounds} round(s): ${_failed}"
+    if [ -n "${_failed_core}" ]; then
+        die "assemble: core arch(es) still failing after ${_max_rounds} round(s): ${_failed_core}-- core is all-or-nothing (RFC §5.4): aborting the ENTIRE publish before any deploy"
     fi
 
-    echo "publish-feed.sh assemble: all $(echo "${_arch_names}" | grep -c .) arch(es) published successfully"
+    if [ -n "${_dropped_extended}" ]; then
+        echo "publish-feed.sh assemble: published with ${_dropped_extended}dropped (extended, best-effort) -- every core arch + every other extended arch succeeded"
+    else
+        echo "publish-feed.sh assemble: all $(echo "${_arch_names}" | grep -c .) arch(es) published successfully"
+    fi
 }
 
 # =========================================================================

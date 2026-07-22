@@ -68,7 +68,39 @@
 #   LIVE_BASE_URL           live feed base, arch appended (default:
 #                           https://apk.leavitt.dev/apk)
 #   IMPRIMATUR_AUTH_TOKEN   optional bearer token (H3), default empty
-#   RETAIN_N                last-N retention count (default: 3)
+#   RETAIN_N                last-N retention count (default: 2 -- S5b
+#                           deliberate choice, RFC §5.7 retention
+#                           measurement, revised DOWN from the pre-widening
+#                           default of 3 now that the feed covers 30 arches
+#                           instead of 4). Worst case is
+#                           RETAIN_N * 30 arches * (per-arch apk size), and
+#                           every retained blob is arch-tagged so none of it
+#                           dedups across arches (apk bakes `arch:` into
+#                           each signed package). Measured source: the LIVE
+#                           feed's real 1.98.9-r2 `.apk` sizes across all 4
+#                           current core arches (apk.leavitt.dev, fetched
+#                           2026-07-21) -- 7.69-8.10 MB, aarch64_cortex-a53
+#                           the largest observed at 8.10 MB. Using that as
+#                           the representative worst-case single-arch size:
+#                             RETAIN_N=3 (old default): 8.10MB * 30 * 3 =~ 729 MB
+#                             RETAIN_N=2 (this default): 8.10MB * 30 * 2 =~ 486 MB
+#                             RETAIN_N=1:                8.10MB * 30 * 1 =~ 243 MB
+#                           against GH Pages' ~1 GB soft limit, N=3 leaves
+#                           under 30% headroom BEFORE counting index/key/
+#                           retained-manifest overhead or any of the 26 new
+#                           extended arches (several families -- amd64,
+#                           loongarch64 -- plausibly compiling LARGER than
+#                           the ARM/MIPS samples measured above) or future
+#                           Tailscale releases growing the binary further;
+#                           N=1 drops the safety margin the mechanism exists
+#                           for entirely (a client holding a briefly-stale
+#                           cached index has zero fallback if it needed the
+#                           immediately-prior version). N=2 keeps that
+#                           one-version-back safety margin while leaving
+#                           ~50% headroom for exactly that growth. Revisit
+#                           if a future measurement (S9 arch-drift-adjacent
+#                           monitoring) shows real per-arch sizes trending
+#                           meaningfully above ~8-9 MB.
 #   SIGN_RETRIES            /sign/ec POST retry count (S5a, RFC §5.4 round-2
 #                           P-SEV2 -- mirrors the ipk `release` job's own
 #                           3x-retry sign loop), default: 3
@@ -102,7 +134,7 @@ PUBKEY_PATH="${PUBKEY_PATH:-${REPO_ROOT}/apk-signing.pem}"
 SIGN_URL="${SIGN_URL:-https://sign.leavitt.info/sign/ec}"
 LIVE_BASE_URL="${LIVE_BASE_URL:-https://apk.leavitt.dev/apk}"
 IMPRIMATUR_AUTH_TOKEN="${IMPRIMATUR_AUTH_TOKEN:-}"
-RETAIN_N="${RETAIN_N:-3}"
+RETAIN_N="${RETAIN_N:-2}"
 SIGN_RETRIES="${SIGN_RETRIES:-3}"
 SIGN_RETRY_DELAY="${SIGN_RETRY_DELAY:-5}"
 
