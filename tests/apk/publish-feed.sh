@@ -31,7 +31,11 @@
 #      recovers within the bounded settle-retry window; MULTIPLE permanently
 #      failing arches are ALL still attempted (never `set -e` out on the
 #      first) and BOTH appear in the final failing set reported to
-#      notify-alert.sh.
+#      notify-alert.sh; a ONE-TIME global propagation-settle phase absorbs
+#      whole-tree CDN lag (all arches transiently unreachable right after a
+#      fresh Pages deploy) BEFORE the per-arch loop, so a correct deploy
+#      never false-fails every arch waiting on CDN propagation (live-run
+#      29977558215 regression).
 #
 # Usage: sh tests/apk/publish-feed.sh
 
@@ -151,7 +155,14 @@ chmod +x "${FAKE_ADB_SIGN}"
 
 # --- stub feed-guard.sh: only `verify-tree` matters here. Same bounded
 # transient-failure / permanent-failure convention as fake-publish-arch.sh
-# above, keyed by the tree dir's own basename (the arch).
+# above, keyed by the tree dir's own basename (the arch) -- PLUS a GLOBAL
+# (arch-agnostic) counter, VERIFY_GLOBAL_FAIL_COUNT_FILE, that decrements on
+# EVERY verify-tree call regardless of which arch it's for. That's the shape
+# of real GitHub Pages CDN propagation lag right after a fresh deploy: the
+# WHOLE served tree is stale for a bounded number of wall-clock seconds, not
+# any one arch in particular -- simulated here as "the first K calls to
+# verify-tree, for whichever arch they land on, fail; call K+1 onward always
+# succeeds."
 FAKE_FEED_GUARD="${WORKDIR}/bin/fake-feed-guard.sh"
 cat > "${FAKE_FEED_GUARD}" <<'EOF'
 #!/bin/sh
@@ -162,6 +173,16 @@ case "${cmd}" in
         tree_dir="$1"
         arch=$(basename "${tree_dir}")
         echo "${arch}" >> "${VERIFY_CALL_LOG}"
+
+        if [ -n "${VERIFY_GLOBAL_FAIL_COUNT_FILE:-}" ] && [ -f "${VERIFY_GLOBAL_FAIL_COUNT_FILE}" ]; then
+            g=$(cat "${VERIFY_GLOBAL_FAIL_COUNT_FILE}")
+            if [ "${g}" -gt 0 ]; then
+                g=$((g - 1))
+                echo "${g}" > "${VERIFY_GLOBAL_FAIL_COUNT_FILE}"
+                echo "FAIL: forced GLOBAL propagation-lag failure for ${arch} (${g} remaining)" >&2
+                exit 1
+            fi
+        fi
 
         if [ -n "${VERIFY_FAIL_COUNT_DIR:-}" ] && [ -f "${VERIFY_FAIL_COUNT_DIR}/${arch}" ]; then
             n=$(cat "${VERIFY_FAIL_COUNT_DIR}/${arch}")
@@ -504,6 +525,58 @@ assert_contains "accumulate-all: final error names v-d TOO (complete failing set
 assert_contains "accumulate-all: notify-alert.sh WAS invoked" "$(cat "${NOTIFY_LOG_2}")" "MESSAGE:"
 assert_contains "accumulate-all: notify-alert.sh's message names v-b" "$(cat "${NOTIFY_LOG_2}")" "v-b"
 assert_contains "accumulate-all: notify-alert.sh's message names v-d TOO" "$(cat "${NOTIFY_LOG_2}")" "v-d"
+
+echo
+
+echo "=== 6c. verify: a ONE-TIME global propagation-settle absorbs whole-tree CDN lag (live-run 29977558215 regression) ==="
+
+# Reproduces the confirmed production false-failure: right after "Deploy to
+# GitHub Pages", the CDN hasn't propagated yet, so EVERY arch's verify-tree
+# fails for some bounded number of seconds -- not one flaky arch, the WHOLE
+# served tree. The per-arch settle window alone (TS_VERIFY_SETTLE_RETRIES) is
+# far too short in production for that (~12s vs. CDN propagation taking
+# minutes), so a real, correct deploy of all 30 arches false-failed every one
+# of them. Proof here: per-arch settle is pinned to 1 attempt (effectively
+# DISABLED, so this test cannot pass by accident via the pre-existing per-arch
+# retry) while a GLOBAL fail-count simulates propagation lag across the first
+# few verify-tree calls, for whichever arch they land on. Only a ONE-TIME
+# settle phase before the per-arch loop -- polling the first arch until the
+# whole tree has provably propagated -- can make this pass.
+PAGES_ROOT_V3="${WORKDIR}/pages-root-v3"
+VERIFY_CALL_LOG_3="${WORKDIR}/verify-call-log-3"
+NOTIFY_LOG_3="${WORKDIR}/notify-3.log"
+GLOBAL_FAIL_FILE_3="${WORKDIR}/verify-global-fail-3"
+: > "${VERIFY_CALL_LOG_3}"
+: > "${NOTIFY_LOG_3}"
+mkdir -p "${PAGES_ROOT_V3}/apk/p-a" "${PAGES_ROOT_V3}/apk/p-b" "${PAGES_ROOT_V3}/apk/p-c"
+echo 4 > "${GLOBAL_FAIL_FILE_3}"
+
+RC=0
+VERIFY_CALL_LOG="${VERIFY_CALL_LOG_3}" VERIFY_GLOBAL_FAIL_COUNT_FILE="${GLOBAL_FAIL_FILE_3}" NOTIFY_LOG="${NOTIFY_LOG_3}" \
+    TS_VERIFY_SETTLE_RETRIES=1 TS_VERIFY_PROPAGATE_RETRIES=6 \
+    "${PUBLISH_FEED}" verify "$(arches_json p-a p-b p-c)" "${PAGES_ROOT_V3}" "http://example.invalid" \
+    >"${WORKDIR}/verify-propagate.log" 2>&1 || RC=$?
+
+assert_eq "propagate-settle: verify exits 0 overall (whole-tree lag absorbed BEFORE the per-arch loop, which never sees it)" \
+    "0" "${RC}"
+assert_eq "propagate-settle: notify-alert.sh was NOT invoked (nothing genuinely failed)" "" \
+    "$(cat "${NOTIFY_LOG_3}")"
+# p-a (the first arch) must have been polled REPEATEDLY -- that's the
+# propagation-settle phase absorbing the global lag before the per-arch loop
+# even starts (with TS_VERIFY_SETTLE_RETRIES=1, the per-arch loop alone could
+# never account for more than 1 call).
+P_A_CALLS=$(grep -c '^p-a$' "${VERIFY_CALL_LOG_3}")
+assert_eq "propagate-settle: p-a was polled more than once (proves a settle phase ran, not just the 1-attempt per-arch loop)" \
+    "true" "$([ "${P_A_CALLS}" -gt 1 ] && echo true || echo false)"
+# Every other arch is untouched by the propagation phase (it only polls the
+# first arch) and, since the tree has now provably propagated, passes the
+# per-arch loop in exactly its normal single attempt.
+assert_eq "propagate-settle: p-b was checked exactly once by the per-arch loop (not repeatedly re-polled)" "1" \
+    "$(grep -c '^p-b$' "${VERIFY_CALL_LOG_3}")"
+assert_eq "propagate-settle: p-c was checked exactly once by the per-arch loop (not repeatedly re-polled)" "1" \
+    "$(grep -c '^p-c$' "${VERIFY_CALL_LOG_3}")"
+
+echo
 
 # ===========================================================================
 # 7. S5b: per-arch bootstrap-force via tier=="extended" (RFC §5.4/§5b-prereq)

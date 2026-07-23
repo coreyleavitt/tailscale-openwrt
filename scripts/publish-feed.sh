@@ -135,6 +135,41 @@
 #                             `verify` counts it as truly failed (default 5)
 #   TS_VERIFY_SETTLE_DELAY    seconds between settle retries (default 3;
 #                             tests set 0)
+#   TS_VERIFY_PROPAGATE_RETRIES  bounded attempts for the ONE-TIME global
+#                             propagation-settle phase `verify` runs BEFORE
+#                             its per-arch loop (default 12). GitHub Pages
+#                             deploys the whole tree ATOMICALLY, so this phase
+#                             polls ONLY the first arch's verify-tree: once it
+#                             passes, the entire tree has propagated, and the
+#                             per-arch loop below then passes every arch on
+#                             its first attempt. This phase is PURELY a wait
+#                             -- if the budget is exhausted without a pass, it
+#                             falls through to the per-arch loop unchanged
+#                             (which then reports real per-arch failures
+#                             exactly as it always has), so a genuinely
+#                             corrupt arch still fails fast and is never
+#                             charged this budget 30x over. Added after a
+#                             confirmed production incident (run 29977558215):
+#                             a correct 30-arch deploy false-failed EVERY arch
+#                             because CDN propagation (minutes) blew through
+#                             the per-arch settle window (~12s) before Pages
+#                             had converged.
+#   TS_VERIFY_PROPAGATE_DELAY  base seconds for the propagation-settle
+#                             phase's exponential backoff (default: whatever
+#                             TS_VERIFY_SETTLE_DELAY resolves to, so tests
+#                             that set TS_VERIFY_SETTLE_DELAY=0 get zero real
+#                             sleeps here too, for free)
+#   TS_VERIFY_PROPAGATE_DELAY_MAX  cap in seconds on the propagation-settle
+#                             phase's exponential backoff (default 30). With
+#                             the defaults (12 retries, base delay 3, cap 30)
+#                             the 11 inter-attempt sleeps are 3+6+12+24+30x7 =
+#                             255s (~4.25 min); together with the verify-tree
+#                             round-trips themselves this targets a ~5 minute
+#                             production propagation budget. The loop is
+#                             always bounded by ATTEMPT COUNT, never elapsed
+#                             time alone, so a delay of 0 (as the test suite
+#                             sets) can never infinite-loop -- it just spends
+#                             its retry budget as instant polls.
 #   ARCHES_JSON_PATH          committed arch table the depublish guard reads
 #                             tier=="core" names from, and (S7b) the table
 #                             the unverified-tier publish log is computed
@@ -483,9 +518,49 @@ cmd_verify() {
 
     _settle_retries="${TS_VERIFY_SETTLE_RETRIES:-5}"
     _settle_delay="${TS_VERIFY_SETTLE_DELAY:-3}"
+    _propagate_retries="${TS_VERIFY_PROPAGATE_RETRIES:-12}"
+    _propagate_delay="${TS_VERIFY_PROPAGATE_DELAY:-${_settle_delay}}"
+    _propagate_delay_max="${TS_VERIFY_PROPAGATE_DELAY_MAX:-30}"
 
     _arch_names=$(echo "${_arches_json}" | jq -r '.[] | (.name // .)')
     [ -n "${_arch_names}" ] || die "verify: empty arch list"
+
+    # ---------------------------------------------------------------------
+    # ONE-TIME GLOBAL PROPAGATION SETTLE (RFC incident 29977558215): GitHub
+    # Pages deploys the whole tree ATOMICALLY, so it's enough to poll ONE
+    # arch -- the first -- until it verifies; once it does, the entire tree
+    # has propagated and every arch below passes on its first per-arch
+    # attempt. This is PURELY a wait: whether it succeeds or exhausts its
+    # budget, we unconditionally fall through to the unchanged per-arch loop,
+    # which is the only place pass/fail is ever decided. A genuinely corrupt
+    # arch therefore still fails fast in that loop -- it is never charged
+    # this propagation budget on top of its own settle budget, let alone once
+    # per arch (30x).
+    _first_arch=""
+    for _a in ${_arch_names}; do
+        _first_arch="${_a}"
+        break
+    done
+
+    _p_attempt=1
+    _p_delay="${_propagate_delay}"
+    while [ "${_p_attempt}" -le "${_propagate_retries}" ]; do
+        if sh "${FEED_GUARD}" verify-tree "${_pages_root}/apk/${_first_arch}" "${_base_url%/}/apk/${_first_arch}" >/dev/null 2>&1; then
+            echo "publish-feed.sh verify: propagation-settle: ${_first_arch} verified on attempt ${_p_attempt}/${_propagate_retries} -- tree has propagated, proceeding to per-arch verification"
+            break
+        fi
+        if [ "${_p_attempt}" -eq "${_propagate_retries}" ]; then
+            echo "publish-feed.sh verify: propagation-settle: budget exhausted after ${_propagate_retries} attempt(s) -- falling through to per-arch verification, which will report any real failure" >&2
+        else
+            echo "publish-feed.sh verify: propagation-settle: attempt ${_p_attempt}/${_propagate_retries} not yet propagated -- waiting ${_p_delay}s" >&2
+            sleep "${_p_delay}"
+            _p_delay=$((_p_delay * 2))
+            if [ "${_p_delay}" -gt "${_propagate_delay_max}" ]; then
+                _p_delay="${_propagate_delay_max}"
+            fi
+        fi
+        _p_attempt=$((_p_attempt + 1))
+    done
 
     _failed=""
     _failed_count=0
