@@ -396,7 +396,18 @@ cmd_assemble() {
                 echo "FAIL: no built .apk found for ${arch} under ${BUILT_APKS_DIR}" > "${STATUS_DIR}/${arch}.status"
                 exit 0
             fi
-            published_name=$(basename "${apk_file}")
+            # De-suffix the arch tag package-apk.sh bakes into the build
+            # artifact name (tailscale-VER-rREL-ARCH.apk, needed so all 30
+            # arches coexist as GitHub release assets) before publishing: an
+            # apk repository resolves a package to PKGNAME-PKGVER.apk -- NO
+            # arch suffix -- derived from the internal pkgname/pkgver the
+            # package carries, never its on-disk filename. Mirrors the
+            # republish-feed path (see build-tailscale.yaml republish-feed
+            # job) already doing this same de-suffix; this normal publish
+            # path regressed to the raw, arch-suffixed basename, which made
+            # apk add tailscale 404 (it requests tailscale-VER-rREL.apk,
+            # never the arch-suffixed name).
+            published_name=$(basename "${apk_file}" | sed "s/-${arch}\.apk\$/.apk/")
             tier=$(awk -v a="${arch}" "\$1==a{print \$2; exit}" "${TIER_MAP}")
             [ -n "${tier}" ] || tier="core"
             if "${SELF}" --worker "${arch}" "${apk_file}" "${published_name}" "${PAGES_ROOT_ARG}" ${FORCE_ARGS_ENV} --tier "${tier}" \

@@ -80,9 +80,15 @@ FAKE_PUBLISH_ARCH="${WORKDIR}/bin/fake-publish-arch.sh"
 cat > "${FAKE_PUBLISH_ARCH}" <<'EOF'
 #!/bin/sh
 set -eu
-ARCH="$1"; PAGES_ROOT="$4"; FORCE_FLAG="${5:-}"
+ARCH="$1"; PUBLISHED_NAME="$3"; PAGES_ROOT="$4"; FORCE_FLAG="${5:-}"
 echo "${ARCH}" >> "${CALL_LOG}"
 [ -n "${FORCE_CALL_LOG:-}" ] && echo "${ARCH} ${FORCE_FLAG}" >> "${FORCE_CALL_LOG}"
+# Regression proof (arch-suffixed published-name bug): records the EXACT
+# published-filename (3rd positional arg, cmd_assemble's `published_name` ->
+# --worker -> PUBLISHED_FILENAME) this stub was invoked with, per arch, so a
+# test can assert what cmd_assemble's dispatch loop actually computed --
+# not just that publish-arch.sh (real or stubbed) was called.
+[ -n "${PUBLISHED_NAME_LOG:-}" ] && echo "${ARCH} ${PUBLISHED_NAME}" >> "${PUBLISHED_NAME_LOG}"
 
 if [ -n "${FAKE_PUBLISH_LATENCY:-}" ]; then
     sleep "${FAKE_PUBLISH_LATENCY}"
@@ -1010,6 +1016,60 @@ assert_contains "H2: the worker's own captured output still shows the underlying
     "$(cat "${WORKDIR}/h2-worker.log")" "forced PERMANENT failure"
 assert_eq "H2: no packages.adb was produced for the failed arch" "false" \
     "$([ -f "${PAGES_ROOT_H2}/apk/h2-bad/packages.adb" ] && echo true || echo false)"
+
+echo
+
+# ===========================================================================
+# 13. PRODUCTION REGRESSION: cmd_assemble must publish the DE-SUFFIXED
+#    filename (<pkgname>-<pkgver>.apk), never the arch-suffixed BUILD
+#    ARTIFACT name (<pkgname>-<pkgver>-<arch>.apk).
+#
+#    package-apk.sh names each build artifact with an arch suffix
+#    (tailscale-<ver>-r<rel>-<arch>.apk) so all 30 per-arch files can coexist
+#    as GitHub release assets -- but an apk repository resolves a package by
+#    <pkgname>-<pkgver>.apk (no arch suffix; apk-tools derives the URL from
+#    the package's OWN internal pkgname/pkgver, never the on-disk filename).
+#    cmd_assemble's dispatch loop used to do
+#    `published_name=$(basename "${apk_file}")` -- passing the RAW,
+#    arch-suffixed artifact name straight through to publish-arch.sh's
+#    PUBLISHED_FILENAME, which cp's the .apk into the feed tree under
+#    EXACTLY that name. Confirmed live: `apk add tailscale` requests
+#    tailscale-1.98.9-r4.apk and gets a 404, while the (wrongly named)
+#    tailscale-1.98.9-r4-mips_24kc.apk 200s. The republish-feed path already
+#    de-suffixes correctly; this was the normal-publish-path regression.
+# ===========================================================================
+echo "=== 13. REGRESSION: published filename is de-suffixed (no arch suffix), matching the real apk resolution convention ==="
+
+BUILT_APKS_13="${WORKDIR}/built-apks-13"
+PAGES_ROOT_13="${WORKDIR}/pages-root-13"
+CALL_LOG_13="${WORKDIR}/call-log-13"
+PUBLISHED_NAME_LOG_13="${WORKDIR}/published-name-log-13"
+: > "${CALL_LOG_13}"
+: > "${PUBLISHED_NAME_LOG_13}"
+
+# Lay out real-shaped, arch-suffixed build artifacts (package-apk.sh's actual
+# naming convention) under the per-arch path segment cmd_assemble's `find`
+# looks for -- mirrors the live incident's exact filenames.
+mkdir -p "${BUILT_APKS_13}/apk-family-mips/mips_24kc"
+printf 'DUMMY-APK' > "${BUILT_APKS_13}/apk-family-mips/mips_24kc/tailscale-1.98.9-r4-mips_24kc.apk"
+mkdir -p "${BUILT_APKS_13}/apk-family-arm64/aarch64_cortex-a53"
+printf 'DUMMY-APK' > "${BUILT_APKS_13}/apk-family-arm64/aarch64_cortex-a53/tailscale-1.98.9-r4-aarch64_cortex-a53.apk"
+
+RC=0
+CALL_LOG="${CALL_LOG_13}" PUBLISHED_NAME_LOG="${PUBLISHED_NAME_LOG_13}" TS_SIGN_CONCURRENCY=2 \
+    "${PUBLISH_FEED}" assemble "$(arches_json mips_24kc aarch64_cortex-a53)" "${BUILT_APKS_13}" "${PAGES_ROOT_13}" \
+    >"${WORKDIR}/assemble-13.log" 2>&1 || RC=$?
+assert_eq "13: assemble exits 0" "0" "${RC}"
+
+assert_contains "13: mips_24kc published under the DE-SUFFIXED name (tailscale-1.98.9-r4.apk)" \
+    "$(cat "${PUBLISHED_NAME_LOG_13}")" "mips_24kc tailscale-1.98.9-r4.apk"
+assert_contains "13: aarch64_cortex-a53 published under the DE-SUFFIXED name (tailscale-1.98.9-r4.apk)" \
+    "$(cat "${PUBLISHED_NAME_LOG_13}")" "aarch64_cortex-a53 tailscale-1.98.9-r4.apk"
+
+assert_not_contains "13: mips_24kc's published name does NOT retain the arch suffix" \
+    "$(cat "${PUBLISHED_NAME_LOG_13}")" "mips_24kc tailscale-1.98.9-r4-mips_24kc.apk"
+assert_not_contains "13: aarch64_cortex-a53's published name does NOT retain the arch suffix" \
+    "$(cat "${PUBLISHED_NAME_LOG_13}")" "aarch64_cortex-a53 tailscale-1.98.9-r4-aarch64_cortex-a53.apk"
 
 echo
 
