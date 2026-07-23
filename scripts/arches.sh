@@ -552,7 +552,11 @@ cmd_compile_families() {
     # in a family carries an identical build tuple by construction, so
     # `.[0]`'s tuple fields are the family's tuple). `arches` is sorted so
     # the output is independent of the input's row order.
-    jq -s '
+    # -c (compact, single-line): this output is consumed by select-matrix.sh
+    # and written to $GITHUB_OUTPUT via `echo "key=${value}"`, which requires a
+    # single-line value -- pretty-printed multi-line JSON aborts the workflow
+    # step with "Invalid format". Every other accessor here already emits -c.
+    jq -cs '
         group_by(.family)
         | map({
             family: .[0].family,

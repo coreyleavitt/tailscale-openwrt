@@ -409,4 +409,23 @@ $(cat "${CANARY_MISMATCH_JSON}.out")"
 fi
 rm -f "${CANARY_MISMATCH_JSON}" "${CANARY_MISMATCH_JSON}.out"
 
+# Regression (live 30-arch run 29975876028 failed here): every select-matrix
+# output is consumed by the workflow via `echo "key=${value}" >>
+# "$GITHUB_OUTPUT"`, which REQUIRES a single-line value -- a multi-line
+# (pretty-printed) JSON blob makes GitHub Actions abort the "Select build
+# matrix" step with `Invalid format '  {'` and cascades every build/publish
+# job to skipped. The M5 refactor regressed --compile-families to pretty JSON
+# (arches.sh cmd_compile_families used `jq -s` not `jq -cs`); a jq -S
+# byte-identity check masked it because it pretty-prints BOTH sides. Assert
+# every mode/event the pipeline uses emits exactly ONE line (no embedded
+# newline).
+echo "=== every select-matrix output is single-line (GITHUB_OUTPUT-safe) ==="
+for _ev in workflow_dispatch release; do
+    for _mode in --ipk-arches --compile-families --publish-arches --verify-families; do
+        _out=$("${SELECT_MATRIX}" "${_ev}" "${_mode}" "${ARCHES_JSON}")
+        _nl=$(printf '%s' "${_out}" | wc -l | tr -d ' ')
+        assert_eq "${_ev} ${_mode} output is single-line (GITHUB_OUTPUT-safe)" "0" "${_nl}"
+    done
+done
+
 harness_finish "tests/apk/select-matrix.sh"
