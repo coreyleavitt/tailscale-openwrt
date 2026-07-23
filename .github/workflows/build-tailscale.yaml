@@ -859,6 +859,38 @@ jobs:
             Cache-Control: public, max-age=31536000, immutable
           HEADERS_EOF
 
+      # FU1 (post-527e826 filename-regression follow-up): PREVENT, not just
+      # detect. The post-publish verify below (unchanged) runs against the
+      # LIVE feed, AFTER Upload Pages artifact + Deploy to GitHub Pages have
+      # already happened -- it caught the 527e826 filename-suffix bug, but
+      # only after a broken feed was already live. This step runs the SAME
+      # index-walk (scripts/publish-feed.sh verify -> feed-guard.sh
+      # verify-tree) against the freshly-ASSEMBLED LOCAL `pages-root` tree
+      # instead, BEFORE anything is uploaded or deployed -- base URL is the
+      # local `pages-root` path itself (feed-guard.sh's fetch_or_status
+      # treats any non-http(s) source as a local path, no network needed),
+      # so a filename/index mismatch of this shape now fails the job here
+      # and Upload Pages artifact / Deploy to GitHub Pages never run at all.
+      #
+      # TS_VERIFY_PROPAGATE_RETRIES=1: the propagation-settle phase exists
+      # solely to absorb GitHub Pages CDN propagation lag (see
+      # publish-feed.sh's own header, incident 29977558215) -- meaningless
+      # against a local directory, which never needs to "propagate".
+      # Pinned to 1 so a genuinely broken tree fails fast here instead of
+      # silently inheriting the live-feed default and spending its ~4.25min
+      # exponential-backoff budget before falling through to a per-arch
+      # loop that was always going to fail anyway. Verified hermetically in
+      # tests/apk/feed-publish.sh section 5: against a local base, the
+      # first-arch check passes on attempt 1 (no settle sleeps) whether the
+      # tree is correct or broken.
+      - name: Pre-deploy integrity verify (local tree, before upload, §4.3)
+        env:
+          PUBLISH_ARCHES_JSON: ${{ needs.select-matrix.outputs.publish_arches }}
+          TS_VERIFY_PROPAGATE_RETRIES: 1
+        run: |
+          set -eu
+          sh scripts/publish-feed.sh verify "${PUBLISH_ARCHES_JSON}" pages-root pages-root
+
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
@@ -880,9 +912,46 @@ jobs:
           set -eu
           sh scripts/publish-feed.sh verify "${PUBLISH_ARCHES_JSON}" pages-root https://apk.leavitt.dev
 
+      # FU2 (post-527e826 filename-regression follow-up): a LIVE, POST-
+      # DEPLOY smoke check that `apk add tailscale` resolves BY NAME
+      # against the now-propagated live feed (this step runs AFTER the
+      # index-walk above, so propagation has already settled) -- for ONE
+      # representative NATIVE arch (x86_64/amd64: no qemu/foreign-arch
+      # emulation needed, see scripts/apk-resolve-smoke.sh's own header for
+      # why apk-tools' arch-agnostic solver/fetch logic needs no per-arch
+      # payload execution to prove this). This is exactly the check
+      # tests/apk/install.sh can never provide -- it installs by direct
+      # .apk path (see that script's own header), never by resolving a
+      # pkgname through a repository, so it stayed green through the whole
+      # 527e826 incident. SMOKE TEST ONLY: one arch, not full per-arch
+      # coverage -- logged explicitly so this is never mistaken for a
+      # substitute for the qemu-verify/install jobs. `apk` is already on
+      # PATH from the "Extract pinned apk-tools binary" step above.
+      #
+      # --allow-untrusted (not --pubkey/real signed trust): this smoke
+      # test also needs local --stub-dep packages to satisfy tailscale's
+      # real OpenWrt-repo dependencies (kmod-tun/ca-bundle/ip-full/
+      # conntrack, scripts/package-apk.sh's own `depends:` line) in a bare
+      # `--root` scratch tree -- apk-tools has no per-repository trust
+      # flag, so a signed-trust run would ALSO need those stub packages
+      # signed with the SAME key, and this repo's CI never holds
+      # apk-signing.pem's PRIVATE half (only sign.leavitt.info/imprimatur
+      # does) -- real signed trust is genuinely out of reach here, not
+      # merely out of proportion. The real signed-feed trust path is
+      # already proven end-to-end by tests/apk/sign-verify.sh (C2); this
+      # step is purely about repo-NAME resolution.
+      - name: Live-feed resolve smoke test (native x86_64, apk add tailscale, FU2)
+        run: |
+          set -eu
+          EXPECT_VERSION=$(sh scripts/feed-guard.sh read-version "https://apk.leavitt.dev/apk/x86_64/packages.adb" --pkgname tailscale)
+          echo "live-feed resolve smoke test (SMOKE TEST ONLY -- one native arch, not full per-arch coverage): expecting tailscale ${EXPECT_VERSION} on x86_64"
+          sh scripts/apk-resolve-smoke.sh https://apk.leavitt.dev/apk/x86_64 x86_64 \
+              --allow-untrusted --expect-version "${EXPECT_VERSION}" \
+              --stub-dep kmod-tun --stub-dep ca-bundle --stub-dep ip-full --stub-dep conntrack
+
       # C5 (RFC §4.6): loud alert on a publish-path failure (signing
       # round-trip, monotonicity rejection, Pages deploy, or the
-      # post-publish index-walk above).
+      # post-publish index-walk/live-feed resolve smoke above).
       - name: Notify on apk feed publish failure
         if: failure()
         env:
@@ -1547,6 +1616,26 @@ jobs:
             Cache-Control: public, max-age=31536000, immutable
           HEADERS_EOF
 
+      # FU1 (post-527e826 filename-regression follow-up): same PREVENT-not-
+      # just-detect gate as publish-feed's identical step above -- run the
+      # index-walk against the freshly-ASSEMBLED LOCAL `pages-root` tree
+      # BEFORE Upload Pages artifact / Deploy to GitHub Pages, over exactly
+      # the resolved arch set this run just assembled. Unlike publish-feed,
+      # this job's post-publish verify (below) already calls
+      # feed-guard.sh verify-tree directly (not through publish-feed.sh's
+      # `verify` orchestration wrapper, which has no propagation-settle
+      # phase to worry about here either) -- so the pre-deploy form mirrors
+      # that same direct per-arch loop, just pointed at the local tree
+      # instead of the live URL: no network, no settle/propagation
+      # machinery involved at all.
+      - name: Pre-deploy integrity verify (local tree, before upload, §4.3)
+        run: |
+          set -eu
+          RESOLVED_ARCHES=$(cat republish-arches.txt)
+          for arch in ${RESOLVED_ARCHES}; do
+            sh scripts/feed-guard.sh verify-tree "pages-root/apk/${arch}" "pages-root/apk/${arch}"
+          done
+
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
@@ -1569,6 +1658,28 @@ jobs:
           for arch in ${RESOLVED_ARCHES}; do
             sh scripts/feed-guard.sh verify-tree "pages-root/apk/${arch}" "https://apk.leavitt.dev/apk/${arch}"
           done
+
+      # FU2 (post-527e826 filename-regression follow-up): same LIVE,
+      # POST-DEPLOY resolve-by-name smoke check as publish-feed's identical
+      # step above -- see that step's own comment for the full rationale
+      # (native x86_64, no qemu; --allow-untrusted because real signed
+      # trust would require signing the local --stub-dep packages, and this
+      # repo's CI never holds apk-signing.pem's private half). A republish
+      # writes to the SAME live feed a normal publish does, so it can
+      # reintroduce the identical filename/index-mismatch regression class
+      # -- this smoke check applies here too, unconditional on which arches
+      # this particular republish covered (it validates the live feed's
+      # general by-name resolvability, same as publish-feed's). `apk` is
+      # already on PATH from the "Extract pinned apk-tools binary" step
+      # above.
+      - name: Live-feed resolve smoke test (native x86_64, apk add tailscale, FU2)
+        run: |
+          set -eu
+          EXPECT_VERSION=$(sh scripts/feed-guard.sh read-version "https://apk.leavitt.dev/apk/x86_64/packages.adb" --pkgname tailscale)
+          echo "live-feed resolve smoke test (SMOKE TEST ONLY -- one native arch, not full per-arch coverage): expecting tailscale ${EXPECT_VERSION} on x86_64"
+          sh scripts/apk-resolve-smoke.sh https://apk.leavitt.dev/apk/x86_64 x86_64 \
+              --allow-untrusted --expect-version "${EXPECT_VERSION}" \
+              --stub-dep kmod-tun --stub-dep ca-bundle --stub-dep ip-full --stub-dep conntrack
 
       # C5 (RFC §4.6): same alert channel as publish-feed's failure step --
       # a republish attempt failing (e.g. the imprimatur outage it was

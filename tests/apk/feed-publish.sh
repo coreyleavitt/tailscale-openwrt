@@ -361,4 +361,122 @@ fi
 kill "${SRV_PID}" >/dev/null 2>&1 || true
 SRV_PID=""
 
+echo
+
+# ---------------------------------------------------------------------------
+# 5. FU1: PRE-DEPLOY local verify (no network) -- prevent, not just detect,
+#    the 527e826 filename-suffix regression.
+#
+# The live incident: cmd_assemble's dispatch loop (scripts/publish-feed.sh)
+# published the arch-suffixed BUILD ARTIFACT basename
+# (tailscale-<ver>-<arch>.apk) instead of the apk-resolved, de-suffixed
+# name (tailscale-<ver>.apk) -- fixed in 527e826, and
+# tests/apk/publish-feed.sh's own section 13 proves cmd_assemble's naming
+# computation directly. The gap THIS section closes is different: the
+# integrity check that WOULD have caught a mismatch of this shape
+# (feed-guard.sh verify-tree's index-walk) only ever ran POST-deploy
+# (build-tailscale.yaml's "Post-publish integrity verify" step, AFTER
+# Upload Pages artifact + Deploy to GitHub Pages) -- so it DETECTED the
+# broken feed but could not PREVENT it from going live.
+#
+# build-tailscale.yaml's new "Pre-deploy integrity verify" step (publish-feed
+# and republish-feed jobs alike) runs this SAME index-walk against the
+# freshly-ASSEMBLED LOCAL pages-root tree, BEFORE Upload/Deploy -- so a
+# tree with this exact shape now fails the job before anything is ever
+# published. Proven here directly against feed-guard.sh (base URL == the
+# local tree dir itself -- feed-guard.sh's own header documents that
+# <base-url> may be a local file path, no network involved) and through the
+# publish-feed.sh `verify` wrapper the new workflow step actually invokes
+# (confirming the propagation-settle phase adds no real delay against a
+# local base in either the pass or fail case, per
+# TS_VERIFY_PROPAGATE_RETRIES=1).
+# ---------------------------------------------------------------------------
+echo "=== 5. PRE-DEPLOY local verify -- prevents (not just detects) the 527e826 filename-suffix regression ==="
+
+PUBLISH_FEED_SH="${REPO_ROOT}/scripts/publish-feed.sh"
+PREDEPLOY_ARCH="mips_24kc"
+
+mk_local_tree_correct() {
+    # mk_local_tree_correct <dir> <arch> -- de-suffixed filename, matching
+    # the package's OWN internal name/version (the correct feed
+    # convention every apk client resolves against).
+    _dir="$1"; _arch="$2"
+    mkdir -p "${_dir}"
+    apk mkpkg --allow-untrusted --info "name:tailscale" --info "version:1.98.9-r4" \
+        --info "arch:${_arch}" --files "${WORKDIR}/pkgroot-empty" \
+        --output "${_dir}/tailscale-1.98.9-r4.apk" >/dev/null
+    apk mkndx --allow-untrusted --compression none --output "${_dir}/packages.adb" "${_dir}"/*.apk >/dev/null
+}
+
+mk_local_tree_arch_suffixed() {
+    # mk_local_tree_arch_suffixed <dir> <arch> -- the EXACT 527e826 shape:
+    # the file on disk keeps package-apk.sh's arch-suffixed BUILD ARTIFACT
+    # name, but the package's internal name/version (what mkndx actually
+    # indexes) is unchanged -- so packages.adb ends up pointing at the
+    # de-suffixed name, which is NOT the file present in the tree.
+    _dir="$1"; _arch="$2"
+    mkdir -p "${_dir}"
+    apk mkpkg --allow-untrusted --info "name:tailscale" --info "version:1.98.9-r4" \
+        --info "arch:${_arch}" --files "${WORKDIR}/pkgroot-empty" \
+        --output "${_dir}/tailscale-1.98.9-r4-${_arch}.apk" >/dev/null
+    apk mkndx --allow-untrusted --compression none --output "${_dir}/packages.adb" "${_dir}"/*.apk >/dev/null
+}
+
+TREE_GOOD="${WORKDIR}/predeploy-good/apk/${PREDEPLOY_ARCH}"
+TREE_BAD="${WORKDIR}/predeploy-bad/apk/${PREDEPLOY_ARCH}"
+mk_local_tree_correct "${TREE_GOOD}" "${PREDEPLOY_ARCH}"
+mk_local_tree_arch_suffixed "${TREE_BAD}" "${PREDEPLOY_ARCH}"
+
+# --- 5a. feed-guard.sh verify-tree directly, base == the tree itself (no
+# network, no HTTP server -- exactly the new pre-deploy workflow step's own
+# invocation shape). ---------------------------------------------------
+if sh "${FEED_GUARD}" verify-tree "${TREE_GOOD}" "${TREE_GOOD}" >"${WORKDIR}/predeploy-good.log" 2>&1; then
+    log_info "OK: verify-tree (local base == tree, no network) PASSES against a correctly-named (de-suffixed) local tree"
+else
+    log_fail "verify-tree unexpectedly FAILED against a correctly-assembled local tree: $(cat "${WORKDIR}/predeploy-good.log")"
+fi
+
+RC=0
+sh "${FEED_GUARD}" verify-tree "${TREE_BAD}" "${TREE_BAD}" >"${WORKDIR}/predeploy-bad.log" 2>&1 || RC=$?
+assert_eq "verify-tree (local base == tree, no network) REJECTS the arch-suffixed-on-disk/de-suffixed-in-index tree (527e826 shape)" "true" \
+    "$([ "${RC}" -ne 0 ] && echo true || echo false)"
+assert_contains "rejection names the missing de-suffixed file" \
+    "$(cat "${WORKDIR}/predeploy-bad.log")" "tailscale-1.98.9-r4.apk is not in the tree"
+
+echo
+
+# --- 5b. through the SAME orchestration wrapper the new pre-deploy
+# workflow step actually invokes (scripts/publish-feed.sh verify) --
+# confirms (i) it also catches this locally, and (ii) with
+# TS_VERIFY_PROPAGATE_RETRIES=1 (what the new step sets), the
+# propagation-settle phase adds NO real delay against a local base, in
+# EITHER the pass or the fail case -- never the multi-minute live-feed CDN
+# propagation budget. ----------------------------------------------------
+ARCHES_JSON_PREDEPLOY="[{\"name\":\"${PREDEPLOY_ARCH}\"}]"
+
+PAGES_ROOT_GOOD="${WORKDIR}/predeploy-good"
+START=$(date +%s)
+RC=0
+TS_VERIFY_PROPAGATE_RETRIES=1 TS_VERIFY_SETTLE_RETRIES=1 \
+    sh "${PUBLISH_FEED_SH}" verify "${ARCHES_JSON_PREDEPLOY}" "${PAGES_ROOT_GOOD}" "${PAGES_ROOT_GOOD}" \
+    >"${WORKDIR}/predeploy-good-wrapper.log" 2>&1 || RC=$?
+END=$(date +%s)
+assert_eq "publish-feed.sh verify (local pre-deploy mode): PASSES against a correct tree" "0" "${RC}"
+assert_eq "publish-feed.sh verify (local pre-deploy mode): adds no real propagation-settle delay on the PASS path (< 3s wall-clock)" "true" \
+    "$([ "$((END - START))" -lt 3 ] && echo true || echo false)"
+
+PAGES_ROOT_BAD="${WORKDIR}/predeploy-bad"
+START=$(date +%s)
+RC=0
+TS_VERIFY_PROPAGATE_RETRIES=1 TS_VERIFY_SETTLE_RETRIES=1 \
+    sh "${PUBLISH_FEED_SH}" verify "${ARCHES_JSON_PREDEPLOY}" "${PAGES_ROOT_BAD}" "${PAGES_ROOT_BAD}" \
+    >"${WORKDIR}/predeploy-bad-wrapper.log" 2>&1 || RC=$?
+END=$(date +%s)
+assert_eq "publish-feed.sh verify (local pre-deploy mode): FAILS against the 527e826-shaped tree -- exactly what the new pre-deploy workflow step relies on to abort BEFORE Upload/Deploy" "true" \
+    "$([ "${RC}" -ne 0 ] && echo true || echo false)"
+assert_eq "publish-feed.sh verify (local pre-deploy mode): adds no real propagation-settle delay on the FAIL path either (< 5s wall-clock, not the ~4.25min live-feed budget)" "true" \
+    "$([ "$((END - START))" -lt 5 ] && echo true || echo false)"
+
+echo
+
 harness_finish "tests/apk/feed-publish.sh"

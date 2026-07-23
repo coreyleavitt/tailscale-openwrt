@@ -23,6 +23,18 @@ name: Fast Tests (Schema Guard + Pure-sh/jq Suites)
 # separate, clearly-labeled job rather than folding into fast-tests' own
 # otherwise-hermetic step list.
 #
+# `apk-hermetic-docker-tests` is likewise SEPARATE, same reason: both
+# tests/apk/feed-publish.sh and tests/apk/resolve-install-smoke.sh need the
+# pinned host apk-tools binary (tests/apk/lib.sh's
+# extract_apk_tools_binary, a `docker build` against the cached
+# `apk-tools` Dockerfile stage) to drive real `apk mkpkg`/`mkndx`/`add`
+# commands -- no qemu, no rootfs container, no live production feed, but
+# not the pure-sh/jq footprint of the `fast-tests` job above either. This
+# is where FU1 (feed-publish.sh's pre-deploy local-verify regression proof
+# for the 527e826 filename-suffix bug) and FU2 (resolve-install-smoke.sh's
+# hermetic by-name resolution proof, the tests/apk/install.sh direct-path
+# blind spot) live in CI.
+#
 # Deliberately NOT included in this workflow (not in scope for a "fast,
 # cheap, every-push" gate):
 #   - qemu/rootfs-boot verification (tests/apk/qemu.sh, rootfs.sh,
@@ -104,3 +116,22 @@ jobs:
 
       - name: tests/apk/compile-negative.sh
         run: sh tests/apk/compile-negative.sh
+
+  apk-hermetic-docker-tests:
+    # Separate job (docker dependency, via extract_apk_tools_binary -- see
+    # file header above): otherwise fully hermetic -- no qemu, no
+    # --privileged docker, no live network beyond what the cached
+    # `apk-tools` Docker stage itself needs. Runs in parallel with
+    # fast-tests/compile-negative, not gated behind either.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: tests/apk/feed-publish.sh
+        run: sh tests/apk/feed-publish.sh
+
+      - name: tests/apk/resolve-install-smoke.sh
+        run: sh tests/apk/resolve-install-smoke.sh
