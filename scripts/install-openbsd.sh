@@ -45,8 +45,15 @@ die() { log "ERROR: $*"; exit 1; }
 fetch() { ftp -o "$2" "$1" >/dev/null 2>&1; }
 
 latest_version() {
-    fetch "$API" /tmp/ts-latest.json || die "release API fetch failed"
-    sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p' /tmp/ts-latest.json | head -1
+    # The API JSON arrives as ONE huge line; OpenBSD's sed regex engine
+    # catastrophically backtracks on a greedy .*"tag_name".* over it
+    # (observed: pinned-CPU infinite spin, not an error). tr the commas to
+    # newlines FIRST so the pattern only ever sees short lines. Caller
+    # must have already fetched /tmp/ts-latest.json -- doing the fetch
+    # here would put die() inside the caller's command substitution,
+    # where its output is captured instead of logged (silent exit).
+    tr ',' '\n' < /tmp/ts-latest.json \
+        | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p' | head -1
 }
 
 running_version() {
@@ -78,6 +85,7 @@ health_check() {
 }
 
 do_update() {
+    fetch "$API" /tmp/ts-latest.json || die "release API fetch failed"
     want="$(latest_version)"
     [ -n "$want" ] || die "could not determine latest release"
     have="$(running_version)"
