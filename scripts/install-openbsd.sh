@@ -96,7 +96,9 @@ do_update() {
     fi
     log "updating $have -> $want"
 
-    tmp="/tmp/ts-update.$$"
+    # workdir under /root, not /tmp: the pre-swap exec check below must
+    # run the binary, and /tmp may be mounted noexec on partitioned hosts
+    tmp="/root/ts-update.$$"
     mkdir -p "$tmp"
     trap 'rm -rf "$tmp"' EXIT
 
@@ -111,9 +113,12 @@ do_update() {
     mv "$tmp/$asset" "$tmp/tailscaled"
 
     chmod 755 "$tmp/tailscaled"
-    ver_out="$("$tmp/tailscaled" version 2>/dev/null | head -1)" \
-        || die "downloaded binary does not execute on this host (OpenBSD release too old for its Go toolchain?)"
-    [ "$ver_out" = "$want" ] || die "binary reports '$ver_out', expected $want"
+    # the embedded CLI dispatches on argv[0] == "tailscale" (ts_include_cli),
+    # so the exec check must go through a symlink -- `tailscaled version`
+    # is not a thing and yields empty output
+    ln -sf tailscaled "$tmp/tailscale"
+    ver_out="$("$tmp/tailscale" version 2>&1 | head -1)" || true
+    [ "$ver_out" = "$want" ] || die "binary reports '$ver_out', expected $want (does not execute? OpenBSD release too old for its Go toolchain?)"
 
     [ -x "$BIN" ] && cp -p "$BIN" "${BIN}.prev"
     install -m 755 "$tmp/tailscaled" "$BIN"
