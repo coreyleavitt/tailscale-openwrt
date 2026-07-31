@@ -28,7 +28,7 @@
 #                    scripts" problem this slice exists to avoid).
 #
 # Usage:
-#   wget -qO- https://raw.githubusercontent.com/coreyleavitt/tailscale-openwrt/master/scripts/install.sh | sh
+#   wget -qO- https://raw.githubusercontent.com/coreyleavitt/tailscale-builds/master/scripts/install.sh | sh
 #   ... | sh -s -- -v 1.94.1     # specific version (ipk/glinet paths)
 #   ... | sh -s -- -y            # auto-confirm (non-interactive)
 #   ... | sh -s -- --path apk    # force a path instead of auto-detecting
@@ -46,7 +46,7 @@
 
 set -eu
 
-REPO="coreyleavitt/tailscale-openwrt"
+REPO="coreyleavitt/tailscale-builds"
 
 # Feed host, per RFC §4.3 layout apk.leavitt.dev/apk/<arch>/{packages.adb,
 # *.apk} + apk.leavitt.dev/apk/keys/tailscale.pem. Scheme/host are

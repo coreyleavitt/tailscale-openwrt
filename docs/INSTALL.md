@@ -14,7 +14,7 @@ checked first, independent of the underlying OpenWrt release string, since
 the binary-swap requirement applies regardless of it):
 
 ```bash
-wget -qO- https://raw.githubusercontent.com/coreyleavitt/tailscale-openwrt/master/scripts/install.sh | sh
+wget -qO- https://raw.githubusercontent.com/coreyleavitt/tailscale-builds/master/scripts/install.sh | sh
 ```
 
 Force a specific path with `--path apk|ipk|glinet` if auto-detection picks
@@ -41,10 +41,10 @@ ssh root@<router-ip>
 cd /tmp
 
 # For mips_24kc (GL.iNet E750, AR750S, etc.)
-wget https://github.com/coreyleavitt/tailscale-openwrt/releases/latest/download/tailscale_1.92.3_mips_24kc.ipk
+wget https://github.com/coreyleavitt/tailscale-builds/releases/latest/download/tailscale_1.92.3_mips_24kc.ipk
 
 # For aarch64_cortex-a53 (Cudy TR3000, etc.)
-wget https://github.com/coreyleavitt/tailscale-openwrt/releases/latest/download/tailscale_1.92.3_aarch64_cortex-a53.ipk
+wget https://github.com/coreyleavitt/tailscale-builds/releases/latest/download/tailscale_1.92.3_aarch64_cortex-a53.ipk
 
 # Install
 opkg install tailscale_*.ipk
@@ -53,7 +53,7 @@ opkg install tailscale_*.ipk
 ### Option 2: Build from Source
 
 ```bash
-git clone https://github.com/coreyleavitt/tailscale-openwrt.git
+git clone https://github.com/coreyleavitt/tailscale-builds.git
 cd tailscale-openwrt/tailscale-package
 ./build.sh 1.92.3
 
@@ -144,7 +144,7 @@ the preflight installs it from whatever feeds are already configured before
 adding ours):
 
 ```bash
-wget -qO- https://raw.githubusercontent.com/coreyleavitt/tailscale-openwrt/master/scripts/install.sh | sh
+wget -qO- https://raw.githubusercontent.com/coreyleavitt/tailscale-builds/master/scripts/install.sh | sh
 ```
 
 **The LuCI web UI (`luci-app-tailscale`) is a separate, ipk-only project.**
@@ -576,14 +576,14 @@ the GitHub release and install it with `--allow-untrusted`:
 ```bash
 # Release assets are arch-namespaced:
 # tailscale-<version>-r<release>-<arch>.apk
-wget https://github.com/coreyleavitt/tailscale-openwrt/releases/download/v<old-version>/tailscale-<old-version>-r<release>-<arch>.apk
+wget https://github.com/coreyleavitt/tailscale-builds/releases/download/v<old-version>/tailscale-<old-version>-r<release>-<arch>.apk
 
 apk add --allow-untrusted ./tailscale-<old-version>-r<release>-<arch>.apk
 ```
 
 This bypasses the signed feed by design, so apk will not verify the package
 against `/etc/apk/keys/tailscale.pem` -- only use it against a release asset
-downloaded from this repo's own [Releases](https://github.com/coreyleavitt/tailscale-openwrt/releases)
+downloaded from this repo's own [Releases](https://github.com/coreyleavitt/tailscale-builds/releases)
 page. **Verified:** `apk-tools` 3.0.2 supports a plain local-file downgrade
 with no flags beyond `--allow-untrusted` -- apk's own transaction log reports
 it explicitly (`Downgrading tailscale (<new> -> <old>)`). Exercised against a

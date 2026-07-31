@@ -4,7 +4,7 @@
 # This script is for devices with gl-sdk4-tailscale where the full IPK conflicts.
 #
 # Usage:
-#   curl -sL https://raw.githubusercontent.com/coreyleavitt/tailscale-openwrt/master/install-glinet.sh | sh
+#   curl -sL https://raw.githubusercontent.com/coreyleavitt/tailscale-builds/master/install-glinet.sh | sh
 #   curl -sL ... | sh -s -- -v 1.94.1    # specific version
 #   curl -sL ... | sh -s -- -l           # list releases
 #
@@ -24,7 +24,7 @@
 
 set -e
 
-REPO="coreyleavitt/tailscale-openwrt"
+REPO="coreyleavitt/tailscale-builds"
 API_URL="https://api.github.com/repos/${REPO}/releases"
 
 # --- load shared install primitives (scripts/lib-install.sh) --------------

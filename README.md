@@ -1,6 +1,6 @@
-# Tailscale for OpenWrt
+# Tailscale builds
 
-Pre-built Tailscale packages for OpenWrt routers with automatic network/firewall integration and exit node killswitch support.
+Pre-built, checksum-verified Tailscale packages and binaries for OpenWrt routers (apk feed + ipk releases) and GL.iNet devices, with automatic network/firewall integration and exit node killswitch support on OpenWrt.
 
 ## Features
 
@@ -32,7 +32,7 @@ for the full arch table (`arches.json`) and the
 and published but not CI-boot-verified).
 
 **ipk releases (OpenWrt 22.03-24.10):** four device-targeted arches, built
-and downloadable from [Releases](https://github.com/coreyleavitt/tailscale-openwrt/releases)
+and downloadable from [Releases](https://github.com/coreyleavitt/tailscale-builds/releases)
 (ipk does not widen with the apk feed -- see
 [docs/MAINTAINING.md](docs/MAINTAINING.md)):
 
@@ -57,7 +57,7 @@ and downloadable from [Releases](https://github.com/coreyleavitt/tailscale-openw
 path automatically:
 
 ```bash
-wget -qO- https://raw.githubusercontent.com/coreyleavitt/tailscale-openwrt/master/scripts/install.sh | sh
+wget -qO- https://raw.githubusercontent.com/coreyleavitt/tailscale-builds/master/scripts/install.sh | sh
 ```
 
 Force a path with `--path apk|ipk|glinet` if auto-detection picks the wrong
@@ -65,11 +65,11 @@ one, or add `-y` to skip confirmation prompts.
 
 ### Stock OpenWrt
 
-Download from [Releases](https://github.com/coreyleavitt/tailscale-openwrt/releases):
+Download from [Releases](https://github.com/coreyleavitt/tailscale-builds/releases):
 
 ```bash
 cd /tmp
-wget https://github.com/coreyleavitt/tailscale-openwrt/releases/latest/download/tailscale_1.94.1_mips_24kc.ipk
+wget https://github.com/coreyleavitt/tailscale-builds/releases/latest/download/tailscale_1.94.1_mips_24kc.ipk
 opkg install tailscale_*.ipk
 ```
 
@@ -80,7 +80,7 @@ repo publishes a **signed apk feed** so `apk add tailscale` works with no
 `--allow-untrusted` flag:
 
 ```bash
-wget -qO- https://raw.githubusercontent.com/coreyleavitt/tailscale-openwrt/master/scripts/install.sh | sh
+wget -qO- https://raw.githubusercontent.com/coreyleavitt/tailscale-builds/master/scripts/install.sh | sh
 ```
 
 Or manually:
@@ -110,7 +110,7 @@ tailscale` gets the CLI and netifd protocol handler only.
 GL.iNet firmware includes `gl-sdk4-tailscale` which conflicts with the full IPK. Use the install script to update just the binary:
 
 ```bash
-wget -qO- https://raw.githubusercontent.com/coreyleavitt/tailscale-openwrt/master/scripts/install-glinet.sh | sh
+wget -qO- https://raw.githubusercontent.com/coreyleavitt/tailscale-builds/master/scripts/install-glinet.sh | sh
 ```
 
 Options:
