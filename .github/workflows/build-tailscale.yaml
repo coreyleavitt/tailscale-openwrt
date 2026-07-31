@@ -401,6 +401,82 @@ jobs:
           name: tailscale-${{ matrix.arch.name }}
           path: packages/*
 
+  # First cross-build-only NON-LINUX raw-binary target (2026-07-31):
+  # openbsd/amd64, for the "proxy" exit node -- OpenBSD's ports pin
+  # tailscale per OS release, so it goes stale between OS upgrades the same
+  # way GL firmware does. Deliberate design choices:
+  #   - raw release asset ONLY (tailscaled_<ver>_openbsd-amd64): never in
+  #     the apk feed and never an arches.json row (that schema is
+  #     OpenWrt-coupled and drives docker boot-verify matrices this target
+  #     cannot participate in -- no OpenBSD containers; unverified by
+  #     construction, like the unverified tier but cross-OS);
+  #   - continue-on-error at job level: release `needs` it for ordering
+  #     (so the asset can't race the SHA256SUMS/upload globs), but a broken
+  #     openbsd cross-build must never block the core ipk release -- same
+  #     non-blocking philosophy as the build-apk sibling. On failure the
+  #     release simply ships without the openbsd asset;
+  #   - NO UPX: OpenBSD's W^X policy kills UPX's self-extracting stub;
+  #     the asset ships uncompressed (~26MB);
+  #   - same source tarball, build tags, and version stamping as the
+  #     Dockerfile build stage (tailscale-package/Dockerfile), so
+  #     `tailscale version` reports identically and the CLI is embedded
+  #     (ts_include_cli -- consumers symlink tailscale -> tailscaled);
+  #   - Go openbsd binaries link the TARGET's libc at runtime (there is no
+  #     static option), and Go supports only the two most recent OpenBSD
+  #     releases -- the consuming host must track a supported release.
+  #   - artifact name MUST keep the `tailscale-` prefix: the release job's
+  #     download-artifact pattern and its checksum/upload globs
+  #     (tailscaled_*) are how this asset reaches SHA256SUMS and the
+  #     release without any change to that job's steps.
+  build-openbsd:
+    if: github.event.inputs.republish != 'true'
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set version
+        id: version
+        run: |
+          VERSION="${{ github.event.inputs.tailscale_version }}"
+          echo "version=${VERSION:-1.92.2}" >> $GITHUB_OUTPUT
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+          cache: false
+
+      - name: Build openbsd/amd64
+        run: |
+          VERSION=${{ steps.version.outputs.version }}
+          mkdir -p packages
+          curl -fsSL "https://github.com/tailscale/tailscale/archive/refs/tags/v${VERSION}.tar.gz" -o tailscale.tar.gz
+          tar xzf tailscale.tar.gz
+          cd "tailscale-${VERSION}"
+          GOTOOLCHAIN=auto \
+          CGO_ENABLED=0 \
+          GOOS=openbsd \
+          GOARCH=amd64 \
+          go build \
+              -trimpath \
+              -buildvcs=false \
+              -tags 'ts_include_cli,ts_omit_aws,ts_omit_bird,ts_omit_tap,ts_omit_clientupdate' \
+              -ldflags="-s -w -X tailscale.com/version.longStamp=${VERSION} -X tailscale.com/version.shortStamp=${VERSION}" \
+              -o "../packages/tailscaled_${VERSION}_openbsd-amd64" \
+              ./cmd/tailscaled
+          cd ..
+          ls -lh packages/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tailscale-openbsd-amd64
+          path: packages/*
+
   # C1b/S4 (RFC docs/rfc-apk-builds.md §6; RFC docs/rfc-apk-arch-coverage.md
   # §5.1/§5.3/S4): a SEPARATE apk build job, deliberately a DAG SIBLING of
   # build-ipk -- its own `needs: [select-matrix]`, never needs-chained
@@ -968,7 +1044,9 @@ jobs:
   # publish-feed/republish-feed's existing event_name checks.
   release:
     if: github.event_name == 'workflow_dispatch'
-    needs: [build-ipk]
+    # build-openbsd in needs is ORDERING only (it is continue-on-error, so
+    # its failure never blocks this release -- see that job's header note).
+    needs: [build-ipk, build-openbsd]
     runs-on: ubuntu-latest
     permissions:
       contents: write
