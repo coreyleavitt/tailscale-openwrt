@@ -706,12 +706,16 @@ echo "=== R2a: --validate rejects a .reason containing an embedded newline (inje
 # assumption. --validate must refuse this at the source, independent of
 # whether the generator's own fix (jq -c row iteration) also happens to
 # neutralize it.
-MULTILINE_REASON="safe start
-evil_arch) touch PWNED_FAMILIES_TEST ;;
-        *)"
-
-jq --arg r "${MULTILINE_REASON}" '(.[] | select(.tier == "infeasible") | select(.name == "powerpc_8548") | .reason) = $r' \
-    "${ARCHES_JSON}" > "${WORKDIR}/bad-reason-newline.json"
+# Build the fixture WITHOUT round-tripping an embedded newline through jq's
+# string serializer: jq 1.7 (shipped on ubuntu-24.04) has a regression where
+# `--arg`/string output emits a control character RAW instead of escaping it,
+# producing INVALID JSON. Instead splice a sentinel (which jq serializes
+# cleanly on every version), then `sed` it to the literal two-character JSON
+# escape `\n` -- valid JSON that decodes to a real newline, independent of the
+# local jq's control-char handling. (POSIX sed replacement `\\n` -> a literal
+# backslash-n, not a raw newline, on both GNU and BSD sed.)
+jq '(.[] | select(.tier == "infeasible") | select(.name == "powerpc_8548") | .reason) = "safe start@@NL@@evil_arch) touch PWNED_FAMILIES_TEST ;;@@NL@@        *)"' \
+    "${ARCHES_JSON}" | sed 's/@@NL@@/\\n/g' > "${WORKDIR}/bad-reason-newline.json"
 
 # Precondition: the fixture really does carry an embedded newline (not a
 # vacuous test because jq's `--arg` happened to collapse it).

@@ -159,7 +159,13 @@ assert_eq "publish-feed gated to workflow_dispatch (no accidental PR publish)" "
 assert_eq "uses actions/upload-pages-artifact" "true" "$(echo "${STRUCT_JSON}" | jq -r '.has_upload_pages_artifact')"
 assert_eq "uses actions/deploy-pages" "true" "$(echo "${STRUCT_JSON}" | jq -r '.has_deploy_pages')"
 
-assert_eq "release job untouched: still needs only build-ipk" '["build-ipk"]' \
+# release's needs may grow as new platform build jobs land (e.g. build-openbsd,
+# added as ORDERING-only + continue-on-error), but the invariant this section
+# guards is that release stays decoupled from the apk-feed pipeline -- it must
+# NOT gain publish-feed as a dependency (asserted separately just below). So we
+# assert the concrete current set rather than "only build-ipk".
+assert_eq "release needs the platform build jobs (build-ipk + build-openbsd), NOT publish-feed" \
+    '["build-ipk","build-openbsd"]' \
     "$(echo "${STRUCT_JSON}" | jq -c '.release_needs')"
 assert_eq "release does NOT need publish-feed (separate deploys, C4 attaches later)" "false" \
     "$(echo "${STRUCT_JSON}" | jq -r '.release_needs_publish_feed')"

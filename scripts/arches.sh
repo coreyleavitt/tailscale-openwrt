@@ -615,11 +615,26 @@ cmd_validate() {
     trap 'rm -f "${_errfile}" "${_familiesfile}" "${_nativeverifyfamiliesfile}"' EXIT
 
     while [ "${_i}" -lt "${_count}" ]; do
-        _row=$(jq -c ".[${_i}]" "${_arches_json}")
         _idx="${_i}"
         _i=$((_i + 1))
 
-        _raw_name=$(echo "${_row}" | jq -r '.name // empty')
+        # Read the two FREE-FORM fields (.name, .reason) DIRECTLY from the
+        # source file by index, and build _row with them removed. Both carry
+        # arbitrary authored text that can include an embedded newline /
+        # control character (exactly what R2a below rejects). If such a value
+        # rode inside _row, it would break the `echo "${_row}" | jq` extraction
+        # below in two ways that both surface as a bare `jq: parse error`
+        # (masking this validator's own clean, row-naming diagnostic): jq 1.7
+        # (ubuntu-24.04) serializes a control char RAW in `-c` output, and
+        # dash's `echo` re-expands a `\n` escape back into a real newline.
+        # Projecting .name/.reason straight from the file, and never letting
+        # them into the re-serialized/re-echoed _row, sidesteps both -- robust
+        # across jq 1.6 / 1.7 / 1.8 and dash/bash. The remaining fields are
+        # constrained enums / a fixed tuple with no free-form text, so the
+        # existing _row extraction is safe for them.
+        _row=$(jq -c ".[${_idx}] | del(.name, .reason)" "${_arches_json}")
+
+        _raw_name=$(jq -r ".[${_idx}].name // empty" "${_arches_json}")
         _name="${_raw_name}"
         if [ -z "${_name}" ]; then
             _name="<row ${_idx}>"
@@ -659,7 +674,7 @@ cmd_validate() {
         # a single clean printable line; an embedded newline/CR/other
         # control character is rejected here, at the schema, rather than
         # relied on the generator alone to defend against.
-        _raw_reason=$(echo "${_row}" | jq -r '.reason // empty')
+        _raw_reason=$(jq -r ".[${_idx}].reason // empty" "${_arches_json}")
         if [ -n "${_raw_reason}" ]; then
             if ! reject_ctrl_or_nl "${_raw_reason}" \
                 "${_name}: reason contains an embedded newline -- must be a single printable line" \
@@ -761,7 +776,7 @@ cmd_validate() {
         # (type-aware), not a truthiness/emptiness test -- an authored
         # `reason: ""` (non-null, but empty) must still count as "has a
         # reason" for this invariant.
-        _reason_is_null=$(echo "${_row}" | jq -r '.reason == null')
+        _reason_is_null=$(jq -r ".[${_idx}].reason == null" "${_arches_json}")
         if [ "${_tier}" = "infeasible" ] && [ "${_reason_is_null}" = "true" ]; then
             echo "FAIL: ${_name}: tier is 'infeasible' but reason is null -- every infeasible row must carry a non-null reason (R1: tier/reason duality)" >&2
             _fail=1
