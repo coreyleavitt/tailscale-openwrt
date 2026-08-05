@@ -96,6 +96,9 @@ jobs:
       - name: tests/apk/dockerfile-goarch-drift.sh
         run: sh tests/apk/dockerfile-goarch-drift.sh
 
+      - name: tests/apk/dockerfile-mirror-hardening.sh
+        run: sh tests/apk/dockerfile-mirror-hardening.sh
+
       - name: tests/apk/stage-payload.sh
         run: sh tests/apk/stage-payload.sh
 

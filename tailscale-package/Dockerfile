@@ -64,6 +64,40 @@ ARG GOMIPS=
 ARG GOMIPS64=
 ARG GO386=
 
+# --- Tumbleweed snapshot pin (mirror-flake hardening) ----------------------
+# openSUSE's download.opensuse.org is a MirrorCache geo-redirector. Right after
+# a new Tumbleweed snapshot publishes, its metadata already references RPMs the
+# community mirrors haven't rsync'd yet, so the redirector hands out a mirror
+# that 404s specific versioned RPMs (go, gcc16, ...) for a window of *hours* --
+# a chronic, openSUSE-infra-acknowledged reality (see systemd/mkosi#4365), not
+# a transient we can retry past. This was ~1-in-3 of our CI builds failing on
+# `Preloading: goX-...rpm [Error: "...404", trying next mirror.]`.
+#
+# Fix: pin every build to the *second-to-last* published snapshot via the
+# frozen, fully-propagated history/ tree, re-resolved on each image build so it
+# self-advances -- it still tracks latest-minus-a-few-days Go. This is NOT a Go
+# version pin (we deliberately do not freeze Go); it only stops us riding the
+# un-propagated bleeding edge. Second-to-*last*, not last, because even the
+# newest history entry can itself be mid-propagation -- the exact mitigation
+# mkosi's maintainers + an openSUSE infra contact converged on. curl ships in
+# the base image, so there is no bootstrap chicken-and-egg. repo-update has no
+# history equivalent and repo-openh264 is a different host we never install
+# from; both are disabled (repo-debug/repo-source already are) so a `refresh`
+# can't flake on a repo this build doesn't need.
+FROM registry.opensuse.org/opensuse/tumbleweed:latest AS tumbleweed-pinned
+RUN set -eu; \
+    snap=$(curl -fsS --retry 5 --retry-all-errors --retry-delay 2 \
+        https://download.opensuse.org/history/list | sed -n '2p'); \
+    case "${snap}" in \
+      [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]) ;; \
+      *) echo "ERROR: could not resolve second-to-last Tumbleweed snapshot (got '${snap}')" >&2; exit 1 ;; \
+    esac; \
+    echo "Pinning Tumbleweed repos to snapshot ${snap}"; \
+    sed -i "s#download.opensuse.org/tumbleweed/#download.opensuse.org/history/${snap}/tumbleweed/#" \
+        /etc/zypp/repos.d/*.repo; \
+    zypper --non-interactive modifyrepo --disable repo-update repo-openh264; \
+    zypper --non-interactive --gpg-auto-import-keys refresh
+
 # Host apk-tools 3, pinned to the version OpenWrt 25.12.0 ships (3.0.2), for
 # `apk mkpkg`/`apk mkndx` (A2 packages the .apk with these). O3 (see
 # docs/rfc-apk-builds.md): extract just the host apk binary from the OpenWrt
@@ -80,16 +114,25 @@ ARG GO386=
 #
 # Pinned by URL + sha256 (sha256 taken from the target's published
 # `sha256sums`, https://downloads.openwrt.org/releases/25.12.0/targets/x86/64/sha256sums).
-FROM registry.opensuse.org/opensuse/tumbleweed:latest AS apk-tools
+FROM tumbleweed-pinned AS apk-tools
 
 ARG OPENWRT_SDK_URL=https://downloads.openwrt.org/releases/25.12.0/targets/x86/64/openwrt-sdk-25.12.0-x86-64_gcc-14.3.0_musl.Linux-x86_64.tar.zst
 ARG OPENWRT_SDK_SHA256=9f371906ce6d2f95418f69fac06df58bf9df0ffc4abed6206c30f1b547fcfc12
 
 RUN zypper --non-interactive refresh && \
-    zypper --non-interactive install -y curl tar zstd && \
+    zypper --non-interactive install -y aria2 curl tar zstd && \
     zypper clean -a
 
-RUN curl -fsSL -o /tmp/openwrt-sdk.tar.zst "${OPENWRT_SDK_URL}" && \
+# aria2 (not curl) for the ~267MB SDK tarball: multi-connection with built-in
+# retry/backoff + resume rides out the transient `curl (35) TLS unexpected eof`
+# / connection-timeout fetch failures we were seeing from downloads.openwrt.org.
+# --checksum verifies integrity during the download itself; the sha256sum -c
+# below is kept as the explicit pin check (asserts we got the *pinned* SDK, not
+# merely an uncorrupted one).
+RUN aria2c --max-tries=5 --retry-wait=5 --connect-timeout=30 --timeout=120 \
+        --max-connection-per-server=4 --split=4 --allow-overwrite=true \
+        --checksum="sha-256=${OPENWRT_SDK_SHA256}" \
+        --dir=/tmp --out=openwrt-sdk.tar.zst "${OPENWRT_SDK_URL}" && \
     echo "${OPENWRT_SDK_SHA256}  /tmp/openwrt-sdk.tar.zst" | sha256sum -c - && \
     tar --zstd -xf /tmp/openwrt-sdk.tar.zst -O --wildcards '*/staging_dir/host/bin/.apk.bin' > /usr/local/bin/apk && \
     chmod 755 /usr/local/bin/apk && \
@@ -103,7 +146,7 @@ RUN /usr/local/bin/apk --version | grep -q ' 3\.0\.2,' && \
     /usr/local/bin/apk mkpkg --help 2>&1 | grep -q 'Mkpkg options:' && \
     /usr/local/bin/apk mkndx --help 2>&1 | grep -q 'Mkndx options:'
 
-FROM registry.opensuse.org/opensuse/tumbleweed:latest AS build
+FROM tumbleweed-pinned AS build
 
 ARG TAILSCALE_VERSION
 ARG OPENWRT_ARCH
@@ -120,6 +163,7 @@ RUN zypper --non-interactive refresh && \
     zypper --non-interactive install -y \
     go \
     upx \
+    aria2 \
     curl \
     bash \
     tar \
@@ -152,7 +196,10 @@ WORKDIR /build
 # stable across re-runs of the same tailscale_version, unlike `git log`
 # against this repo's own HEAD -- and there is no .git in this build context
 # anyway).
-RUN curl -L "https://github.com/tailscale/tailscale/archive/refs/tags/v${TAILSCALE_VERSION}.tar.gz" -o tailscale.tar.gz && \
+RUN aria2c --max-tries=5 --retry-wait=5 --connect-timeout=30 --timeout=120 \
+        --max-connection-per-server=4 --split=4 --allow-overwrite=true \
+        --out=tailscale.tar.gz \
+        "https://github.com/tailscale/tailscale/archive/refs/tags/v${TAILSCALE_VERSION}.tar.gz" && \
     tar -xzf tailscale.tar.gz && \
     mv tailscale-${TAILSCALE_VERSION} tailscale
 
