@@ -1,5 +1,5 @@
 {
   "upstream_latest": "v1.102.2",
-  "our_latest_release": "v1.102.1",
-  "needs_build": true
+  "our_latest_release": "v1.102.2",
+  "needs_build": false
 }
